@@ -558,7 +558,15 @@ static int effect_light_value(void)
 // ============================================================================
 
 // Header short accessors (header spans effect+0x04..0x15).
-#define AH_SHORT(eff, off)  (*(short*)&(eff)->animHeader[(off)])
+// UNALIGNED_AH_FIX: the header shorts can sit at odd addresses; read and
+// write them bytewise so the SH-4 does not trap on every access.
+struct AhShortRef {
+    unsigned char* p;
+    operator short() const { short v; memcpy(&v, p, sizeof v); return v; }
+    AhShortRef& operator=(short v) { memcpy(p, &v, sizeof v); return *this; }
+    AhShortRef& operator=(const AhShortRef& o) { return *this = (short)o; }
+};
+#define AH_SHORT(eff, off)  (AhShortRef{ (unsigned char*)&(eff)->animHeader[(off)] })
 #define AH_USHORT(eff, off) (*(unsigned short*)&(eff)->animHeader[(off)])
 
 // Forward declarations (behaviors reference each other out of order).

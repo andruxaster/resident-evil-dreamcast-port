@@ -346,6 +346,20 @@ static unsigned int MarniStpKnock_Take(unsigned int src)
     return twin;
 }
 
+// STP_TWIN_SHARED_FIX: the Dreamcast backend shares one handle between
+// identical textures and frees it only when its last owner lets go, by any
+// path. It calls this then, and the twin goes with its source.
+#ifdef __DREAMCAST__
+extern "C" void dc_marni_texture_freed(unsigned int handle)
+{
+    unsigned int twin = MarniStpKnock_Take(handle);
+    if (twin != 0 && twin != handle) {
+        MarniDX* dx = Marni_DX();
+        if (dx != NULL) dx->DestroyTexture((MarniHandle)twin);
+    }
+}
+#endif
+
 MarniHandle MarniStpKnockoutTwin(MarniHandle tex)
 {
     if (s_stpKnock == NULL) return MARNI_NULL_HANDLE;
@@ -531,8 +545,15 @@ static int VTable_CreateTextureHandle(void* self, void* texDesc,
             }
             MarniHandle twin = pD3D->m_pDX->CreateTexture(w, h, 32, knock, NULL, NULL);
             operator_delete(knock);
-            if (twin != MARNI_NULL_HANDLE)
-                MarniStpKnock_Set((unsigned int)tex, (unsigned int)twin);
+            if (twin != MARNI_NULL_HANDLE) {
+                // A shared source handle (Dreamcast dedup) already has its
+                // twin, identical to this one: keep that one and drop the
+                // duplicate reference instead of orphaning the old twin.
+                if (MarniStpKnockoutTwin(tex) != MARNI_NULL_HANDLE)
+                    pD3D->m_pDX->DestroyTexture(twin);
+                else
+                    MarniStpKnock_Set((unsigned int)tex, (unsigned int)twin);
+            }
         }
     }
 
@@ -565,9 +586,16 @@ static int VTable_DeleteTextureHandle(void* self, int handle)
         // The knock-out twin is not reachable from its source texture, so it
         // has to die with it here. Without this its slot leaks AND a later
         // texture allocated the same handle would inherit the stale twin.
+#ifdef __DREAMCAST__
+        // The handle may be shared by other owners. The backend frees it
+        // with the last one and then calls dc_marni_texture_freed, which
+        // takes the twin along.
+        pD3D->m_pDX->DestroyTexture((MarniHandle)handle);
+#else
         unsigned int twin = MarniStpKnock_Take((unsigned int)handle);
         if (twin != 0) pD3D->m_pDX->DestroyTexture((MarniHandle)twin);
         pD3D->m_pDX->DestroyTexture((MarniHandle)handle);
+#endif
     }
     return 1;
 }

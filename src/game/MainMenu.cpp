@@ -412,6 +412,15 @@ LAB_0046381c:
     MATRIX_00d22680.t[0] = 0;
     MATRIX_00d22680.t[1] = 0;
     MATRIX_00d22680.t[2] = 0;
+    // MENU_CAM_PAD_FIX: MatrixToCamera reads this as 8 ints; the 2 padding
+    // bytes after m[2][2] are the high half of "to Y". The fields above never
+    // touch them, and a stale 1 there tilted the menu camera 77 degrees (item
+    // models drawn off screen after the key config screen). Clear them.
+    {
+        char* padBeg = (char*)&MATRIX_00d22680.m[2][2] + sizeof(MATRIX_00d22680.m[2][2]);
+        char* padEnd = (char*)&MATRIX_00d22680.t[0];
+        if (padEnd > padBeg) memset(padBeg, 0, (size_t)(padEnd - padBeg));
+    }
     MatrixToCamera(&MATRIX_00d22680);
 
     setBackColor(0x199, 0x199, 0x199);
@@ -6785,6 +6794,27 @@ static void FUN_004844c0(void)
     // t = (0,0,15000) and rotates the root Sca's +X "zoom" onto -Z, so the depth
     // is 15000 - zoom - 59800 at the start of the intro, 8472 at rest, and it
     // never crosses the camera plane.
+
+    // DIAG_ITEM_VIEW: report the model translation and the menu camera once
+    // per change (the pickup view has been seen projected off-screen).
+    {
+        static int s_lastT[3] = { 0x7fffffff, 0, 0 };
+        static int s_lastC[3] = { 0x7fffffff, 0, 0 };
+        const int* t = (const int*)g_gteRotTransMatrix.t;
+        const int* c = (const int*)g_RoomCameraData.t;
+        if (t[0] != s_lastT[0] || t[1] != s_lastT[1] || t[2] != s_lastT[2] ||
+            c[0] != s_lastC[0] || c[1] != s_lastC[1] || c[2] != s_lastC[2]) {
+            char dbg[200];
+            sprintf_s(dbg, sizeof(dbg),
+                "[ITEMVIEW] slot=%d t=(%d,%d,%d) rot0=(%d,%d,%d) cam.t=(%d,%d,%d) cam.r0=(%d,%d,%d)\n",
+                g_itemRenderSlot, t[0], t[1], t[2],
+                (int)g_gteRotTransMatrix.m[0][0], (int)g_gteRotTransMatrix.m[1][1], (int)g_gteRotTransMatrix.m[2][2],
+                c[0], c[1], c[2],
+                (int)g_RoomCameraData.m[0][0], (int)g_RoomCameraData.m[1][1], (int)g_RoomCameraData.m[2][2]);
+            OutputDebugStringA(dbg);
+            for (int k = 0; k < 3; k++) { s_lastT[k] = t[k]; s_lastC[k] = c[k]; }
+        }
+    }
 
     int depth = slot + 10;
     if (slot >= 3) slot = 0;

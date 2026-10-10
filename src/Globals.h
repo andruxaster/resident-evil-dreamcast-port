@@ -507,7 +507,7 @@ extern "C" {
 void re1_srand(unsigned int seed);
 int  re1_rand(void);
 }
-#if !defined(__linux__)
+#if !defined(__linux__) && !defined(__DREAMCAST__)
 #define rand(...)  re1_rand(__VA_ARGS__)
 #define srand(...) re1_srand(__VA_ARGS__)
 #endif
@@ -574,10 +574,11 @@ void dc_apply_item_tables(void);
 // that lands on behaviour 11 (Zombie.cpp). No-op when g_bDcMode is off.
 void dc_apply_zombie_tables(void);
 
-extern WORD          g_message_flags;                  // 0x00bebcc0
+extern WORD&         g_message_flags;                  // 0x00bebcc0 (g_messageFlagPair[0], FLAGBANK_LAYOUT_FIX)
 
 // Message display system
-extern unsigned short g_messageFlagsBackup;            // 0x00bebcc2
+extern unsigned short& g_messageFlagsBackup;           // 0x00bebcc2 (g_messageFlagPair[1])
+extern unsigned short g_messageFlagPair[2];
 extern unsigned short g_PauseGameInMsgFlag;            // 0x00bf0a18
 extern unsigned char* g_MessagePtr;                    // 0x00bf0a1c
 extern unsigned char  g_MessageStateCounter;           // 0x00bf0a16

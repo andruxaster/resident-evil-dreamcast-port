@@ -45,6 +45,24 @@ extern void FUN_00483580(int* joint, MATRIX* out);          // 0x00483580 item_v
 #include <cmath>
 #include "../DebugPrint.h"
 
+// TMD_SCRATCH_FIX: grow-only scratch arrays for FlushTmdObjects (screen
+// positions, vertex colours, clip flags). It used to malloc and free all three
+// for every object, every frame - ~100 pairs a tick, each through the malloc
+// mutex. Kept between calls; enlarged only when an object needs more.
+static void* TmdScratch(int which, size_t bytes)
+{
+    static void*  s_buf[3];
+    static size_t s_cap[3];
+    if (bytes > s_cap[which]) {
+        free(s_buf[which]);
+        size_t n = bytes < 4096 ? 4096 : bytes;
+        n = (n + 31) & ~(size_t)31;
+        s_buf[which] = malloc(n);
+        s_cap[which] = s_buf[which] ? n : 0;
+    }
+    return s_buf[which];
+}
+
 // ============================================================================
 // Tuning constants for the projection. The original DX5 renderer projected
 // with a perspective viewport; the GTE-equivalent pinhole model uses
@@ -578,16 +596,15 @@ void FlushTmdObjects(void)
 
             // Transform + project + light every vertex
             // (heap-allocate per object; vertex counts are small)
-            float* sx = (float*)malloc(sizeof(float) * vtxCount * 4);
+            float* sx = (float*)TmdScratch(0, sizeof(float) * vtxCount * 4);
             float* sy = sx + vtxCount;
             float* vzArr = sx + vtxCount * 2;   // view-space Z, for the depth sort
-            float* cr = (float*)malloc(sizeof(float) * vtxCount * 3);
+            float* cr = (float*)TmdScratch(1, sizeof(float) * vtxCount * 3);
             float* cg = cr + vtxCount;
             float* cb = cg + vtxCount;
-            char* clipped = (char*)malloc(vtxCount);
+            char* clipped = (char*)TmdScratch(2, vtxCount);
             if (!sx || !cr || !clipped) {
-                free(sx); free(cr); free(clipped);
-                continue;
+                continue;   // TMD_SCRATCH_FIX: scratch buffers are kept, nothing to free
             }
 
             // First normal (flat-shaded primitives only fill vertex 0)
@@ -770,7 +787,7 @@ void FlushTmdObjects(void)
                 }
             }
 
-            free(sx); free(cr); free(clipped);
+            // TMD_SCRATCH_FIX: sx/cr/clipped are kept for the next object.
         }
 
         // The depth buffer resolves which face wins, so the sort is no longer

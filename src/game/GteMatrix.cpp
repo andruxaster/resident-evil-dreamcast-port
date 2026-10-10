@@ -440,6 +440,11 @@ MATRIX* RotMatrixY(int r, MATRIX* m)
 // ============================================================================
 void ApplyMatrix(MATRIX* m, SVECTOR* v0, VECTOR* v1)
 {
+    // UNALIGNED_GTE_FIX: effect records pass a matrix / vector at an odd
+    // address; work on aligned copies (the SH-4 traps on each such access).
+    MATRIX mA; SVECTOR vA;
+    if (((uintptr_t)m & 1) != 0)  { memcpy(&mA, m, sizeof mA);  m = &mA; }
+    if (((uintptr_t)v0 & 1) != 0) { memcpy(&vA, v0, sizeof vA); v0 = &vA; }
     int vx = (int)v0->x;
     int vy = -(int)v0->y;  // PS1 Y negation
     int vz = (int)v0->z;
@@ -465,6 +470,9 @@ void ApplyMatrix(MATRIX* m, SVECTOR* v0, VECTOR* v1)
 // ============================================================================
 void ApplyMatrixSV(MATRIX* m, SVECTOR* src, SVECTOR* dst)
 {
+    MATRIX mA; SVECTOR vA;
+    if (((uintptr_t)m & 1) != 0)   { memcpy(&mA, m, sizeof mA);   m = &mA; }
+    if (((uintptr_t)src & 1) != 0) { memcpy(&vA, src, sizeof vA); src = &vA; }
     int vx = (int)src->x;
     int vy = -(int)src->y;  // PS1 Y negation
     int vz = (int)src->z;

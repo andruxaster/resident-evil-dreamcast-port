@@ -13,6 +13,7 @@
 #include "../marni/MarniSystem.h"
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include "../system/AssetPath.h"
 #include "../DebugPrint.h"
 
@@ -505,9 +506,20 @@ static void load_effect_sprites(void)
 
     // Composite each declared room sprite into its page buffer (CLUT row 0 -
     // the base palette, uploaded to SRV 11-14 as before).
-    static DWORD s_pageBuffer[4][256 * 256];
+    // RE1: heap scratch - 1 MB is only needed while the pages are baked
+    // (MarniCreateTexture copies them), not resident for the whole run.
+    // EFFSPR_SCRATCH_SPLIT: four 256 KB pages, not one 1 MB block - a free
+    // 256 KB run is far easier to find on a fragmented heap.
+    const size_t kPageBytes = 256 * 256 * sizeof(DWORD);
+    DWORD* s_pageBuffer[4] = { NULL, NULL, NULL, NULL };
     for (int i = 0; i < 4; i++) {
-        memset(s_pageBuffer[i], 0, sizeof(s_pageBuffer[i]));
+        s_pageBuffer[i] = (DWORD*)malloc(kPageBytes);
+        if (s_pageBuffer[i] == NULL) {
+            dbg_printf("[effspr] out of memory for page scratch\n");
+            for (int k = 0; k < i; k++) free(s_pageBuffer[k]);
+            return;
+        }
+        memset(s_pageBuffer[i], 0, kPageBytes);
     }
     for (unsigned int slot = 0; slot < 8; slot++) {
         unsigned char type = g_abEffSpriteIndexTable[8 + slot];
@@ -547,7 +559,7 @@ static void load_effect_sprites(void)
     for (unsigned int row = 1; row < 4; row++) {
         bool anyRow = false;
         for (int i = 0; i < 4; i++) {
-            memset(s_pageBuffer[i], 0, sizeof(s_pageBuffer[i]));
+            memset(s_pageBuffer[i], 0, kPageBytes);
         }
         for (unsigned int slot = 0; slot < 8; slot++) {
             unsigned char type = g_abEffSpriteIndexTable[8 + slot];
@@ -576,6 +588,11 @@ static void load_effect_sprites(void)
                 g_TexturePageBpp[slot] = 16;
             }
         }
+    }
+
+    for (int i = 0; i < 4; i++) {
+        free(s_pageBuffer[i]);
+        s_pageBuffer[i] = NULL;
     }
 
     // The weapon-FX sheets 4-7 (blood, ember, glass, 0xb) live on the page-1
@@ -679,7 +696,9 @@ static int BakeWeaponSheetFromPage(int slot, const char* pageName)
     }
     if (nextV < height + pageV) height = (unsigned short)(nextV - pageV);
 
-    static DWORD rgba[256 * 256];
+    // RE1: heap scratch (256 KB), freed once the texture is created.
+    DWORD* rgba = (DWORD*)malloc(256 * 256 * sizeof(DWORD));
+    if (rgba == NULL) return 0;
     const unsigned char* pix = p;
     for (unsigned short y = 0; y < height; y++) {
         const unsigned char* src = pix + (pageV + y) * pixW;
@@ -701,6 +720,7 @@ static int BakeWeaponSheetFromPage(int slot, const char* pageName)
         g_TexturePageSRV[srvSlot] = MARNI_NULL_HANDLE;
     }
     MarniCreateTexture(256, height, 32, rgba, &g_TexturePageSRV[srvSlot]);
+    free(rgba);
     g_TexturePageWidth[srvSlot] = 256;
     g_TexturePageHeight[srvSlot] = height;
     g_TexturePageBpp[srvSlot] = 8;
@@ -833,7 +853,8 @@ void InitRoomEffSprite(void)
     } while (i < 8);
 
     // 0x0047ba1d: Load room effect animation data from RDT
-    load_effect_sprite_data(g_RdtPointer->effect_anim_index, g_RdtPointer->effect_anim_data, g_RdtPointer, 8);
+    const unsigned char roomSprites = load_effect_sprite_data(g_RdtPointer->effect_anim_index,
+                                                              g_RdtPointer->effect_anim_data, g_RdtPointer, 8);
 
     // 0x0047ba41: Compute effect sprite image data pointers
     RDT* pRdt = g_RdtPointer;
@@ -843,7 +864,13 @@ void InitRoomEffSprite(void)
         unsigned int idx = (unsigned int)i;
         i = i + 1;
         // (RDT+3)-3 in the decompile: the offsets are relative to the RDT base.
-        DAT_00ac9cd0[idx] = (int)pRdt + *(int*)(spriteImBase - idx * 4);
+        // ROOM_EFFSPRITE_OVERREAD_FIX: the table holds one dword per sprite the
+        // room declares (read backwards). The original read all 8, i.e. past
+        // the table for rooms with fewer sprites - garbage pointers for the
+        // unused slots, from before g_DataBuffer in the hall (ASan). Unused
+        // slots are never dereferenced (every consumer checks the index table
+        // for 0xFF), so 0 is safe and nothing outside the table is touched.
+        DAT_00ac9cd0[idx] = (idx < roomSprites) ? (int)pRdt + *(int*)(spriteImBase - idx * 4) : 0;
     } while (i < 8);
 
     // 0x0047ba5c: Set up effect sprite texture positions

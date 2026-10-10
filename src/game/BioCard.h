@@ -8,7 +8,8 @@
 // ALL fields MUST be in the correct order, size, and position.
 // ============================================================================
 #pragma pack(push, 1)
-struct BioCardLayout {
+// alignas(4) - FLAGBANK_LAYOUT_FIX: the flag banks inside are read as dwords.
+struct alignas(4) BioCardLayout {
     // 0x000: save-card header (0x00be9620-0x00be9820).
     // Initialized EXE .data swept into the card dump; byte-identical between
     // bio_card.dat and every shipped save. Layout: "SC" magic + 13 01 at +0,

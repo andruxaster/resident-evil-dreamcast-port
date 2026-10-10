@@ -889,11 +889,14 @@ char          g_saveFileName[260] = {};         // 0x004d42d8
 
 
 // --- Game start / game loop globals ---
-// 0x00bebcc0
-unsigned short g_message_flags = 0;
+// 0x00bebcc0 / 0x00bebcc2 - FLAGBANK_LAYOUT_FIX. One 4-byte-aligned pair, as
+// in the original: flag bank 6 (cmd_bit_test/cmd_bit_op/flag_bank_set) reads
+// and writes it as a single dword whose upper half is the backup word.
+alignas(4) unsigned short g_messageFlagPair[2] = { 0, 0 };
+unsigned short& g_message_flags = g_messageFlagPair[0];
 
 // Message display system
-unsigned short g_messageFlagsBackup = 0;            // 0x00bebcc2
+unsigned short& g_messageFlagsBackup = g_messageFlagPair[1];   // 0x00bebcc2
 unsigned short g_PauseGameInMsgFlag = 0;            // 0x00bf0a18
 unsigned char* g_MessagePtr = NULL;                 // 0x00bf0a1c
 unsigned char  g_MessageStateCounter = 0;            // 0x00bf0a16
@@ -2033,13 +2036,20 @@ extern "C" int re1_rand(void)
     return (int)((g_randState >> 16) & 0x7fff);
 }
 
-#if defined(__linux__)
-extern "C" int rand() noexcept
+#if defined(__linux__) || defined(__DREAMCAST__)
+// glibc declares rand/srand __THROW (noexcept in C++); newlib (KallistiOS)
+// declares them without an exception specifier, and the definition must match.
+#if defined(__GLIBC__)
+#define RE1_LIBC_NOEXCEPT noexcept
+#else
+#define RE1_LIBC_NOEXCEPT
+#endif
+extern "C" int rand() RE1_LIBC_NOEXCEPT
 {
     return re1_rand();
 }
 
-extern "C" void srand(unsigned int seed) noexcept
+extern "C" void srand(unsigned int seed) RE1_LIBC_NOEXCEPT
 {
     re1_srand(seed);
 }

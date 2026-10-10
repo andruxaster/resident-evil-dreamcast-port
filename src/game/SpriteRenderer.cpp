@@ -95,12 +95,16 @@ void FlushSpriteCommandsRange(unsigned int minDepth, unsigned int maxDepth,
     // Stable sort so equal-depth draws keep their submission order. The two
     // range flushes (FrameRateGovernor) each re-sort the untouched queue, so
     // both halves come out in the same global order.
-    std::stable_sort(
-        g_SpriteCommandBuffer,
-        g_SpriteCommandBuffer + g_SpriteQueueCount,
-        [](const TextureDraw& a, const TextureDraw& b) {
-            return a.depthSort > b.depthSort;
-        });
+    // SPRITE_RESORT_FIX: this runs once per mask depth / depth band, many times
+    // a frame, and the queue is already in order after the first call - skip
+    // the stable_sort (temp buffer + moving every 80-byte record) when a
+    // read-only pass shows nothing would change. Same result either way.
+    auto depthOrder = [](const TextureDraw& a, const TextureDraw& b) {
+        return a.depthSort > b.depthSort;
+    };
+    if (!std::is_sorted(g_SpriteCommandBuffer, g_SpriteCommandBuffer + g_SpriteQueueCount, depthOrder)) {
+        std::stable_sort(g_SpriteCommandBuffer, g_SpriteCommandBuffer + g_SpriteQueueCount, depthOrder);
+    }
 
     CMarniDirect3D* pD3D = (CMarniDirect3D*)g_pMarniDirect3D;
     (void)pD3D;
@@ -898,7 +902,14 @@ void TexturePage_ClearAll(void) {
     // persists made FlushSpriteCommands fall back to pageW=256, which
     // under-sampled 64x64 global textures (statface/blue/staitem) and
     // rendered their sprites as a tiny 8x8 region stretched to size.
+    // TEXPAGE_CLEARALL_FIX: release each legacy page before forgetting it.
+    // Textures are reference-counted, so a page an SRV slot still holds stays
+    // alive; one only this table held (the room mask's legacy page, among
+    // others) was otherwise leaked here - ~1.8 MB of VRAM by the Yawn area.
     for (int i = 0; i < 256; i++) {
+        if (g_TexturePageTable_DAT[i] != 0) {
+            destroy_texture_page(g_TexturePageTable_DAT[i]);
+        }
         g_TexturePageTable_DAT[i] = 0;
     }
 }
@@ -918,12 +929,48 @@ void TexturePage_Create(int slotIndex) {
     }
 }
 
+// Room masks: the texture slots the last mask load created, released before
+// the next one (the PS1 kept only the current camera's mask - the next simply
+// overwrote it in VRAM). The port never frees slot textures otherwise, so each
+// camera's mask stayed resident in whatever slots it used.
+static int         s_maskSlot[64];
+static MarniHandle s_maskHandle[64];
+static int         s_maskCount = 0;
+
+#ifdef __DREAMCAST__
+extern "C" volatile int g_dcSmoothNext;   // BG_SMOOTH_FIX (platform.cpp)
+#endif
+
+static void ReleaseRoomMaskTextures(void) {
+    for (int i = 0; i < s_maskCount; i++) {
+        const int slot = s_maskSlot[i];
+        // Only if the slot still holds what the mask load put there.
+        if (g_TexturePageSRV[slot] == s_maskHandle[i] && s_maskHandle[i] != MARNI_NULL_HANDLE) {
+            if (Marni_DX() != NULL) Marni_DX()->DestroyTexture(s_maskHandle[i]);
+            g_TexturePageSRV[slot] = MARNI_NULL_HANDLE;
+        }
+    }
+    s_maskCount = 0;
+}
+
 void TexturePage_SetupFull(void* imageData, short bankID, short pageOffset, int slotIndex) {
+    MarniHandle before[256];
+    const bool isMask = (slotIndex == ROOM_MASK_TEXTURE_SLOT);
+    if (isMask) {
+        ReleaseRoomMaskTextures();
+        for (int i = 0; i < 256; i++) before[i] = g_TexturePageSRV[i];
+    }
+#ifdef __DREAMCAST__
+    g_dcSmoothNext = isMask ? 1 : 0;   // BG_SMOOTH_FIX: masks are drawn filtered
+#endif
     ProcessTextureImage(imageData, bankID, pageOffset, slotIndex);
     // ProcessTextureImage rebuilds the legacy Marni page, but the DX11 path
     // needs an explicit SRV as well. Room masks are loaded through this entry
     // point and AddSprite samples the resulting page directly.
     LoadEffectTextureSheet(slotIndex, imageData);
+#ifdef __DREAMCAST__
+    g_dcSmoothNext = 0;
+#endif
     if (slotIndex >= 0 && slotIndex < 256) {
         // This is the same origin written by ProcessTextureImage's original
         // descriptor at 0x008ed838/0x008ed83a. AddSprite subtracts it after
@@ -931,6 +978,15 @@ void TexturePage_SetupFull(void* imageData, short bankID, short pageOffset, int 
         g_TexturePageOriginX[slotIndex] =
             (short)(bankID * 0x40 - ((bankID < 0x10) ? 0 : 0x400));
         g_TexturePageOriginY[slotIndex] = (bankID < 0x10) ? 0 : 0x100;
+    }
+    if (isMask) {
+        for (int i = 0; i < 256 && s_maskCount < 64; i++) {
+            if (g_TexturePageSRV[i] != before[i] && g_TexturePageSRV[i] != MARNI_NULL_HANDLE) {
+                s_maskSlot[s_maskCount] = i;
+                s_maskHandle[s_maskCount] = g_TexturePageSRV[i];
+                s_maskCount++;
+            }
+        }
     }
 }
 
@@ -950,6 +1006,7 @@ void TexturePage_RefreshCLUT(int slotIndex, int mode, int clutIndex) {
 }
 
 void TexturePage_DeleteSet(int slotIndex) {
+    if (slotIndex == ROOM_MASK_TEXTURE_SLOT) ReleaseRoomMaskTextures();
     for (int i = 0; i < 8; i++) {
         int pageIdx = slotIndex * 8 + i;
         if (pageIdx >= 0 && pageIdx < 256) {

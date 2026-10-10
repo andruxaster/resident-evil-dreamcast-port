@@ -53,7 +53,13 @@
 #include "../Globals.h"
 #include "../platform/platform.h"
 
+// TASK_STACK_DC_SHRINK: on the Dreamcast the tasks peak at ~16 KB (measured on
+// the console); 64 KB keeps a 4x margin and returns 576 KB of main RAM.
+#ifdef __DREAMCAST__
+#define TASK_STACK_SIZE   65536       // 64KB per task
+#else
 #define TASK_STACK_SIZE   262144      // 256KB per task
+#endif
 #define TASK_MAX           3
 #define TASK_SUSPENDED     0x40       // Bit 6: suspend flag
 #define TASK_DEAD          0x00
@@ -184,6 +190,69 @@ static void TaskSwitch_Start(void)
 static void TaskSwitch_Resume(void)
 {
     ReturnToScheduler_Resume();
+}
+
+#elif defined(__DREAMCAST__)
+
+// ============================================================================
+// Dreamcast (SH-4) switch primitives.
+//
+// KallistiOS's newlib has no ucontext, so the same contract as the ucontext
+// path below is expressed with a 30-instruction register swap in
+// src/platform/dreamcast/ctxswitch.S: it saves exactly the SH-4 GCC ABI's
+// callee-saved state (r8-r15, pr, fr12-fr15, fpscr, mach/macl) and returns
+// into the other context. A fresh context "returns" into TaskEntry on the
+// task's own stack. KOS's preemptive threads are not involved - everything
+// runs on the main thread, as on PC.
+// ============================================================================
+#include "../platform/dreamcast/ctxswitch.h"
+
+static re1_ctx_t s_SchedContext;
+static re1_ctx_t s_TaskContext[TASK_MAX];
+
+void Task_exit(void);   // forward: a task function that returns has ended
+
+// Every swap is bracketed by re1_ctx_begin_switch / re1_ctx_end_switch: IRQs
+// off, KOS told the bounds of the stack being switched TO (its scheduler
+// asserts sp >= kthread_t::stack), swap, then the IRQ state saved by THIS
+// side is restored when execution comes back to it. A brand-new task has no
+// "back" yet, so TaskEntry restores the state its starter recorded.
+static uint32_t s_TaskEntryIrq;
+
+static void TaskEntry(void)
+{
+    re1_ctx_end_switch(s_TaskEntryIrq);
+    void (*fn)(void) = (void (*)(void))g_TasksEIP[g_CurrentTaskID];
+    fn();
+    // A dead task is never resumed, so this yield does not come back.
+    Task_exit();
+}
+
+static void TaskSwitch_Start(void)
+{
+    int id = g_CurrentTaskID;
+    // 8-byte aligned top, 16 bytes below the end like the x86 path.
+    uintptr_t top = ((uintptr_t)(TaskStackBase(id) + TASK_STACK_SIZE) - 16) & ~(uintptr_t)7;
+    re1_ctx_init(&s_TaskContext[id], (void*)top, TaskEntry);
+    uint32_t irq = re1_ctx_begin_switch(TaskStackBase(id), TASK_STACK_SIZE);
+    s_TaskEntryIrq = irq;
+    re1_ctx_swap(&s_SchedContext, &s_TaskContext[id]);
+    re1_ctx_end_switch(irq);
+}
+
+static void TaskSwitch_Resume(void)
+{
+    int id = g_CurrentTaskID;
+    uint32_t irq = re1_ctx_begin_switch(TaskStackBase(id), TASK_STACK_SIZE);
+    re1_ctx_swap(&s_SchedContext, &s_TaskContext[id]);
+    re1_ctx_end_switch(irq);
+}
+
+static void TaskYield(void)
+{
+    uint32_t irq = re1_ctx_begin_switch(NULL, 0);   // back to the kernel stack
+    re1_ctx_swap(&s_TaskContext[g_CurrentTaskID], &s_SchedContext);
+    re1_ctx_end_switch(irq);
 }
 
 #else  // !(MSVC x86)

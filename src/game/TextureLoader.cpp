@@ -385,8 +385,14 @@ static size_t s_pagePixelCopyCap = 0;
 static WORD*  s_pagePaletteCopy = NULL;
 static size_t s_pagePaletteCopyCap = 0;
 
+#ifdef __DREAMCAST__
+extern "C" void* volatile g_dcPageCaller;   // MarniDX_PVR.cpp: texture census
+#endif
 int create_texture_page(void* psxTexData, int flags)
 {
+#ifdef __DREAMCAST__
+    g_dcPageCaller = __builtin_return_address(0);
+#endif
     // The original always passes a slot's stored PSXTexture work buffer
     // (&DAT_008ed4d0 + slot*0x37c). The port keeps no such copy - the
     // D3D11 SRVs persist instead - and TexturePage_Create/Refresh call here
@@ -510,6 +516,10 @@ void ProcessTextureImage(void* imageBuffer, short textureBankID, short pageOffse
 
     if (tableOk) {
         DWORD* pageTable = (DWORD*)((BYTE*)&g_TexturePageTable_DAT + slotOffset);
+        // TEXPAGE_OVERWRITE_FIX: the free above runs only while the slot's page
+        // count is set; a handle left behind after the count was reset would be
+        // overwritten here and its texture leaked (one per room-mask load).
+        if (pageTable[0] != 0) { destroy_texture_page(pageTable[0]); pageTable[0] = 0; }
         pageTable[0] = create_texture_page(&psxTex, 2);
     } else {
         create_texture_page(&psxTex, 2);

@@ -37,6 +37,7 @@
 //     ...
 // ============================================================================
 #include "../Globals.h"
+#include <cstdlib>
 #include "../platform/platform.h"
 #include "../DebugPrint.h"
 #include "../Version.h"
@@ -622,8 +623,10 @@ void DebugRoomChange_ApplyPendingPlacement(void)
                     hexDigits[nRoom >> 4],
                     hexDigits[nRoom & 0xF]);
 
-            static unsigned char s_neighbourRdt[768 * 1024];   // largest shipped RDT is ~630KB
-            size_t size = LoadFile(path, s_neighbourRdt, 1);
+            // RE1: lazily allocated - debug menu only, so normal play never
+            // pays the 768 KB (largest shipped RDT is ~630KB).
+            static unsigned char* s_neighbourRdt = (unsigned char*)malloc(768 * 1024);
+            size_t size = (s_neighbourRdt != NULL) ? LoadFile(path, s_neighbourRdt, 1) : 0;
             if (size > 0x94 + 0x100) {
                 unsigned int init = *(unsigned int*)(s_neighbourRdt + 0x60);
                 if (init > 0x94 && init < size - 4) {

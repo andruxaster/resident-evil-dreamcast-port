@@ -418,6 +418,10 @@ static SaveScreenLayout GetSaveScreenLayout(void)
 // FileWrite (0x004122a0)
 // Write a buffer to a file. Returns bytes written or -1 on failure.
 // ============================================================================
+#if defined(__DREAMCAST__)   // DC_VMU_SAVES
+extern "C" void dc_save_commit(const char* path, const void* data, int len);
+#endif
+
 int FileWrite(const char* name, void* buf, int len)
 {
     FILE* fp = fopen(name, "wb");
@@ -425,6 +429,9 @@ int FileWrite(const char* name, void* buf, int len)
     size_t written = fwrite(buf, 1, len, fp);
     fclose(fp);
     if ((int)written != len) return -1;
+#if defined(__DREAMCAST__)   // DC_VMU_SAVES: the save root is the RAM disk; persist to the VMU
+    dc_save_commit(name, buf, len);
+#endif
     return len;
 }
 

@@ -13,6 +13,10 @@
 #define STB_VORBIS_NO_PUSHDATA_API
 #include "../third_party/stb_vorbis.c"
 
+#if defined(__DREAMCAST__)   // DC_FAST_PROBES
+extern "C" int dc_path_exists(const char* path);
+#endif
+
 namespace {
 
 // The marker the asset migrator puts in every WAV it writes: a RIFF chunk
@@ -30,6 +34,9 @@ unsigned int rd32(const unsigned char* p)
 
 int FileExists(const char* path)
 {
+#if defined(__DREAMCAST__)   // DC_FAST_PROBES: answered from the /cd directory cache
+    return dc_path_exists(path);
+#endif
     FILE* f = fopen(path, "rb");
     if (f == NULL) return 0;
     fclose(f);

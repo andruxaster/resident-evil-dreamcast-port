@@ -1,0 +1,160 @@
+# Makefile.dreamcast - Dreamcast (KallistiOS) build. See docs/DREAMCAST_PORT.md.
+#
+#   source /opt/toolchains/dc/kos/environ.sh   (KOS 2.2.x, kos-chain "stable")
+#   make -f Makefile.dreamcast                      # -> build/dc/residentevil.elf
+#   make -f Makefile.dreamcast RE1_DC_ROOT=/pc/home/me/re1 run   # dcload-ip
+#
+# The shared translation units are read from CMakeLists.txt (the RE1_SOURCES
+# block), so this file never drifts from the Linux list. Only the platform
+# layer and the renderer backend are Dreamcast-specific.
+
+ifeq ($(KOS_BASE),)
+$(error KOS_BASE is not set - source $$KOS_BASE/environ.sh first)
+endif
+
+.DEFAULT_GOAL := all
+
+BUILD      := build/dc
+TARGET     := $(BUILD)/residentevil.elf
+RE1_DC_ROOT ?= /cd
+RE1_DC_VERBOSE ?= 0
+# Renderer backend: pvr (PowerVR2) by default; null = headless bring-up.
+RE1_DC_RENDERER ?= pvr
+# PVR bring-up switches, see MarniDX_PVR.cpp (0 = off)
+RE1_PVR_DEBUG ?= 0
+# 1 = no AICA stream (hardware bisecting)
+RE1_DC_SILENT ?= 0
+# 1 = one-letter serial trace of risky operations (with RE1_DC_VERBOSE=1)
+RE1_DC_TRACE ?= 0
+# 1 = game code built with -finstrument-functions; after L+R is pressed every
+# game function entry is printed to the serial port (tools/dreamcast/ftrace_resolve.sh)
+RE1_DC_FTRACE ?= 0
+# 1 = fill the free heap with garbage at boot (hardware-like RAM in an emulator)
+RE1_DC_POISON ?= 0
+# 1 = sampling profiler: game-thread PCs in the periodic report (with RE1_DC_VERBOSE=1)
+RE1_DC_PROF ?= 0
+# 1 = game code built with -fsanitize=alignment: every unaligned access is
+# counted by source line (works in Flycast too); listed in the periodic report
+RE1_DC_UACOUNT ?= 0
+# 0 = no file cache in sound RAM (A/B tests)
+RE1_DC_FILECACHE ?= 1
+
+OPEN  := (
+CLOSE := )
+SHARED_SRCS := $(shell sed -n '/^set$(OPEN)RE1_SOURCES/,/^$(CLOSE)/p' CMakeLists.txt | grep -o 'src/[^ ]*\.cpp')
+
+DC_SRCS := \
+    src/platform/dreamcast/platform.cpp \
+    src/platform/dreamcast/input.cpp \
+    src/platform/dreamcast/audio.cpp \
+    src/platform/dreamcast/video.cpp \
+    src/platform/dreamcast/config.cpp \
+    src/platform/dreamcast/crash.cpp \
+    src/platform/dreamcast/stubs.cpp \
+    src/platform/dreamcast/vmu_save.cpp \
+    src/platform/dreamcast/dc_iso.cpp \
+    src/platform/dreamcast/main.cpp
+
+ifeq ($(RE1_DC_RENDERER),null)
+DC_SRCS += src/marni/MarniDX_Null.cpp
+else
+DC_SRCS += src/marni/MarniDX_PVR.cpp
+endif
+
+DC_ASM := src/platform/dreamcast/ctxswitch.S
+
+OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(SHARED_SRCS) $(DC_SRCS)) \
+        $(patsubst %.S,$(BUILD)/%.o,$(DC_ASM))
+
+# Rebuild the DC layer when RE1_DC_ROOT / RE1_DC_VERBOSE change (make does not
+# track -D values by itself). The stamp is rewritten only when they differ.
+DC_DEFINES  := RE1_DC_ROOT=$(RE1_DC_ROOT) RE1_DC_VERBOSE=$(RE1_DC_VERBOSE) RE1_DC_RENDERER=$(RE1_DC_RENDERER) RE1_PVR_DEBUG=$(RE1_PVR_DEBUG) RE1_DC_SILENT=$(RE1_DC_SILENT) RE1_DC_TRACE=$(RE1_DC_TRACE) RE1_DC_FTRACE=$(RE1_DC_FTRACE) RE1_DC_POISON=$(RE1_DC_POISON) RE1_DC_PROF=$(RE1_DC_PROF) RE1_DC_UACOUNT=$(RE1_DC_UACOUNT) RE1_DC_FILECACHE=$(RE1_DC_FILECACHE)
+DEFS_STAMP  := $(BUILD)/.dc_defines
+ifneq ($(file < $(DEFS_STAMP)),$(DC_DEFINES))
+$(shell mkdir -p $(BUILD))
+$(file > $(DEFS_STAMP),$(DC_DEFINES))
+endif
+$(patsubst %.cpp,$(BUILD)/%.o,$(DC_SRCS)): $(DEFS_STAMP)
+
+# Function-entry tracing of the game code (not the DC layer, not Marni, not
+# the per-vertex math), rebuilt when RE1_DC_FTRACE changes.
+FTRACE_STAMP := $(BUILD)/.ftrace
+GAME_INSTR := ftrace=$(RE1_DC_FTRACE)/uacount=$(RE1_DC_UACOUNT)
+ifneq ($(file < $(FTRACE_STAMP)),$(GAME_INSTR))
+$(shell mkdir -p $(BUILD))
+$(file > $(FTRACE_STAMP),$(GAME_INSTR))
+endif
+FTRACE_SRCS := $(filter-out src/marni/% src/game/GteMatrix.cpp src/game/TmdRenderer.cpp src/system/PngImage.cpp,$(SHARED_SRCS))
+FTRACE_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(FTRACE_SRCS))
+# Alignment counting covers ALL shared code (model/animation parsing included).
+UACOUNT_OBJS := $(patsubst %.cpp,$(BUILD)/%.o,$(SHARED_SRCS))
+$(UACOUNT_OBJS): $(FTRACE_STAMP)
+ifeq ($(RE1_DC_FTRACE),1)
+$(FTRACE_OBJS): RE1_CXXFLAGS += -finstrument-functions
+endif
+ifeq ($(RE1_DC_UACOUNT),1)
+$(UACOUNT_OBJS): RE1_CXXFLAGS += -fsanitize=alignment -fsanitize-recover=alignment
+endif
+
+# -fno-strict-aliasing: decompiled code reinterprets buffers freely.
+# -w: same as the Linux build; switch to -Wall -Wcast-align when hunting
+#     unaligned accesses (SH-4 raises an address error on every one).
+RE1_CXXFLAGS := -std=gnu++17 -O2 -w -fno-strict-aliasing -fwrapv \
+                -Isrc -include src/platform/dreamcast/dc_compat.h -DRE1_DC_ROOT='"$(RE1_DC_ROOT)"' \
+                -DRE1_DC_VERBOSE=$(RE1_DC_VERBOSE) -DRE1_PVR_DEBUG=$(RE1_PVR_DEBUG) -DRE1_DC_SILENT=$(RE1_DC_SILENT) -DRE1_DC_TRACE=$(RE1_DC_TRACE) -DRE1_DC_FTRACE=$(RE1_DC_FTRACE) -DRE1_DC_POISON=$(RE1_DC_POISON) -DRE1_DC_PROF=$(RE1_DC_PROF) -DRE1_DC_UACOUNT=$(RE1_DC_UACOUNT) -DRE1_DC_FILECACHE=$(RE1_DC_FILECACHE)
+
+all: $(TARGET)
+
+$(BUILD)/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	kos-c++ $(RE1_CXXFLAGS) -c $< -o $@
+
+$(BUILD)/%.o: %.S
+	@mkdir -p $(dir $@)
+	kos-cc -c $< -o $@
+
+# Relink when KallistiOS itself is rebuilt (e.g. after changing a KOS define).
+KOS_LIBS_DEP := $(wildcard $(KOS_BASE)/lib/$(KOS_ARCH)/libkallisti.a)
+
+# LOCKU_DIAG: profiling builds route every mutex_unlock through a counter
+# (audio.cpp, __wrap_mutex_unlock).
+COMMA := ,
+PROF_LDFLAGS := $(if $(filter 1,$(RE1_DC_PROF)),-Wl$(COMMA)--wrap=mutex_unlock)
+
+$(TARGET): $(OBJS) $(KOS_LIBS_DEP)
+	kos-c++ -o $@ $(OBJS) $(PROF_LDFLAGS) -lm
+	$(KOS_SIZE) $@
+
+# Where the 3.5 MB of static buffers went, biggest first.
+bss-report: $(TARGET)
+	$(KOS_CC_BASE)/bin/$(KOS_CC_PREFIX)-nm -S --size-sort -C $(TARGET) | tail -40
+
+# dcload: the Dreamcast sees the host filesystem under /pc, so for a host run
+# point RE1_DC_ROOT at the folder that CONTAINS USA/:
+#   make -f Makefile.dreamcast RE1_DC_ROOT=/pc/path/to/data run DC_IP=192.168.1.50
+# DC_IP -> dc-tool-ip (BBA / LAN adapter); DC_SERIAL -> dc-tool-ser (coder's
+# cable); neither -> $(KOS_LOADER) from environ.sh.
+ifneq ($(DC_IP),)
+DC_LOADER := dc-tool-ip -t $(DC_IP) -x
+else ifneq ($(DC_SERIAL),)
+DC_LOADER := dc-tool-ser -t $(DC_SERIAL) -x
+else
+DC_LOADER := $(KOS_LOADER)
+endif
+
+run: $(TARGET)
+	@case "$(RE1_DC_ROOT)" in /pc/*) ;; *) echo "note: RE1_DC_ROOT=$(RE1_DC_ROOT) is not under /pc - the game will look on the disc";; esac
+	$(DC_LOADER) $(TARGET)
+
+# GD-ROM image for GDEMU / Flycast:  make -f Makefile.dreamcast gdi DATA=/srv/re1
+gdi: $(TARGET)
+	@[ -n "$(DATA)" ] || { echo "usage: make -f Makefile.dreamcast gdi DATA=<folder with USA/>"; exit 1; }
+	sh tools/dreamcast/make_gdi.sh $(TARGET) $(DATA) $(BUILD)/gdi
+
+clean:
+	rm -rf $(BUILD)
+
+list-sources:
+	@echo $(SHARED_SRCS) | tr ' ' '\n'
+
+.PHONY: all bss-report run clean list-sources gdi

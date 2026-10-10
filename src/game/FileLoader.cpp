@@ -5,6 +5,14 @@
 #include "../platform/platform.h"
 #include "../system/AssetPath.h"
 #include "FileLoader.h"
+
+#if defined(__DREAMCAST__)   // DC_FAST_LOADS3
+// Whole-file read via platform/dreamcast/platform.cpp: aligned DMA body,
+// tail read first (see dc_fread_whole there).
+extern "C" size_t dc_fread_whole(FILE* fp, void* dst, size_t size);
+// DC_FAST_LOADS4: /cd files by LBA (platform/dreamcast/dc_iso.cpp).
+extern "C" long dc_iso_load(const char* path, void* dst);
+#endif
 #include <stdio.h>
 
 // ============================================================================
@@ -39,6 +47,23 @@ size_t LoadFile(const char* path, void* buffer, unsigned char flags)
     // title flow. The flag is therefore accepted and ignored here.
     (void)flags;
 
+#if defined(__DREAMCAST__)   // DC_FAST_LOADS4
+    // /cd files are read by LBA from the direct ISO reader: no fopen, so no
+    // iso9660 directory scan (~17 GD-ROM commands per open in the big dirs).
+    {
+        const DWORD dcT0 = plat_time_ms();
+        const long got = dc_iso_load(filePath, buffer);
+        if (got >= 0) {
+            const DWORD dcMs = plat_time_ms() - dcT0;
+            if (dcMs >= 20 || got >= 64 * 1024) {
+                printf("[LOAD] %s: %u KB in %u ms\n", filePath,
+                       (unsigned)(got / 1024), (unsigned)dcMs);
+            }
+            return (size_t)got;
+        }
+    }
+#endif
+
     int retryCount = 0;
     BOOL showError = FALSE;
 
@@ -46,14 +71,34 @@ size_t LoadFile(const char* path, void* buffer, unsigned char flags)
         // Try to open the file
         FILE* fp = fopen(filePath, "rb");
         if (fp != NULL) {
+#if defined(__DREAMCAST__)   // DC_FAST_LOADS
+            // newlib would refill a ~1 KB stdio buffer per chunk - hundreds of
+            // small GD-ROM reads per file. Unbuffered, the fread below becomes
+            // one read() the iso9660 driver serves in long sector runs.
+            setvbuf(fp, NULL, _IONBF, 0);
+            const DWORD dcLoadT0 = plat_time_ms();
+#endif
             // Get file size
             fseek(fp, 0, SEEK_END);
             size_t fileSize = ftell(fp);
             fseek(fp, 0, SEEK_SET);
 
             // Read into buffer
+#if defined(__DREAMCAST__)   // DC_FAST_LOADS3
+            size_t bytesRead = dc_fread_whole(fp, buffer, fileSize);
+#else
             size_t bytesRead = fread(buffer, 1, fileSize, fp);
+#endif
             fclose(fp);
+#if defined(__DREAMCAST__)   // DC_FAST_LOADS
+            {
+                const DWORD dcMs = plat_time_ms() - dcLoadT0;
+                if (dcMs >= 20 || fileSize >= 64 * 1024) {
+                    printf("[LOAD] %s: %u KB in %u ms\n", filePath,
+                           (unsigned)(fileSize / 1024), (unsigned)dcMs);
+                }
+            }
+#endif
 
             if (bytesRead == fileSize) {
                 return fileSize;
