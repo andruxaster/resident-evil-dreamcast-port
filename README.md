@@ -1,3 +1,5 @@
+A native Sega Dreamcast port of Resident Evil (1997), based on the PC decompilation and built with KallistiOS. Features PowerVR2 rendering, AICA audio, Maple controller support, Cinepak video playback, and VMU saves. Currently in beta.
+
 # Resident Evil 1 for PC Decompilation
 
 ## Introduction
