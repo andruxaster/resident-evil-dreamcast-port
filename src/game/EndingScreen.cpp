@@ -29,6 +29,8 @@
 #include "SpriteRenderer.h"
 #include "BioCard.h"
 #include "PrintText.h"
+#include "saturn/SaturnBattle.h"
+#include "Bonus.h"
 #include "../system/AssetPath.h"
 #include <cstdio>
 #include <cstring>
@@ -881,8 +883,11 @@ void ending_state(void)
     // rocket launcher, 0x800e1688). The cleared-once art swap is
     // a USA/PC behaviour the DC dropped, so in DC mode take the first-run branch
     // even though InitializeGame forces the flag for gameplay (GameStart.cpp).
+    // Western difficulty (Globals.h) raises the flag for gameplay in the Saturn
+    // and in a PC game with [Game] WesternDifficulty=1 as well, so it is not a
+    // "cleared once" marker there either.
     const char* bgPath;
-    if (g_bDcMode) {
+    if (g_bDcMode || western_difficulty()) {
         bgPath = ((g_playerEntity.id & 3) == CHAR_CHRIS)
                      ? GAME_DATA_ROOT "data\\clis01.pix"
                      : GAME_DATA_ROOT "data\\jill01.pix";
@@ -957,7 +962,7 @@ void ending_state(void)
     }
     // DC ending has no cleared-once congratulations-FMV swap (see the backdrop
     // note above).
-    if (!g_bDcMode &&
+    if (!g_bDcMode && !western_difficulty() &&
         Flg_ck((int)g_ScenarioFlags, SCENARIO_FLAG_SECOND_PLAYTHROUGH) != 0) {
         g_selectedFmvId = 26;
     }
@@ -1123,7 +1128,24 @@ void ending_state(void)
     }
     (void)slot;
 
+    // Port: record what this run earned in SAVE/bonus.dat as well, so it is
+    // not tied to the next-cycle save written below (Bonus.h has the rules).
+    // Each argument is the original's own decision from the lines above.
+    bonus_on_ending(s_hasSpecialKey != 0 && (!g_bDcMode || g_DcDifficulty < DC_DIFFICULTY_ADVANCED),
+                    (s_effectsEnabled != 0) || (s_grantRocket != 0),
+                    s_underTimeLimit != 0,
+                    g_bDcMode && g_DcDifficulty >= DC_DIFFICULTY_ADVANCED
+                        && (s_endingId == 6 || s_endingId == 7));
+
     Flg_on((int)g_ScenarioFlags, SCENARIO_FLAG_SECOND_PLAYTHROUGH);
+
+    // Sega Saturn: the Battle Game unlocks here, and only here. ENDING.PRG's
+    // main (0x0602DC28) sets save byte 0xBF = 1 on entry, unconditionally, if
+    // a save exists and reads cleanly - any ending counts, and which one is
+    // irrelevant. It must sit before the save write below, which is what carries
+    // the byte to disk; the bio_card reload at the top of this function is what
+    // cleared it, so raising it any earlier would be undone.
+    saturn_battle_unlock();
 
     setSomeColor(128, 128, 128);
     g_SpecialRoomLightState = (short)0xFFFF;

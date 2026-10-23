@@ -1,5 +1,6 @@
 #include "core/DcOverlay.h"
 
+#include "core/BackgroundWebp.h"
 #include "core/Bss.h"
 #include "core/Ps1Manifest.h"
 #include "core/Tim.h"
@@ -597,6 +598,7 @@ bool stepBackgrounds(Ctx& c) {
             // Coverage is judged by NAME, not content: the overlay's paks come
             // out of this converter and the base tree's came out of Capcom's,
             // so they never match byte for byte even for the same photograph.
+            // A base tree converted to WebP covers a camera with its .webp.
             const bool unchanged = !baseStageDir.empty() &&
                                    isPs1Original(ps1Folder, bss, data);
             // What the overlay already had for this room, so the summary counts
@@ -624,7 +626,7 @@ bool stepBackgrounds(Ctx& c) {
             if (unchanged) {
                 bool baseHasAll = !written.empty();
                 for (const auto& f : written) {
-                    if (findChildCI(baseStageDir, f).empty()) {
+                    if (findBackgroundFile(baseStageDir, f).empty()) {
                         baseHasAll = false;
                         break;
                     }
@@ -781,8 +783,10 @@ bool checkBackgrounds(Ctx& c, std::string* error) {
             ++checked;
             char name[32];
             std::snprintf(name, sizeof(name), "RC%s%02X0.pak", src.c_str(), rid);
-            if (isRegularFile(joinPath(joinPath(c.o.overlayDir, "Stage" + src),
-                                       name)))
+            // Either format: an overlay left as WebP by an earlier run, or a
+            // base tree converted to it, has the camera as RC*.webp.
+            if (!findBackgroundFile(joinPath(c.o.overlayDir, "Stage" + src), name)
+                     .empty())
                 continue;
             // A room whose backgrounds the DC never changed has no pak of its
             // own and resolves to the base tree at runtime, which is the point.
@@ -790,7 +794,7 @@ bool checkBackgrounds(Ctx& c, std::string* error) {
             {
                 const std::string baseStage =
                     findChildCI(c.o.baseTreeDir, "Stage" + src);
-                if (!baseStage.empty() && !findChildCI(baseStage, name).empty())
+                if (!baseStage.empty() && !findBackgroundFile(baseStage, name).empty())
                     continue;
             }
             missing.push_back("Stage" + digit + " room 0x" +

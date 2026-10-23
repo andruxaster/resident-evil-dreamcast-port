@@ -165,11 +165,8 @@ void crashlog_mark(const char* step)
 
 void crashlog_install(void)
 {
-    FILE* f = open_log();
-    if (f) {
-        fprintf(f, "\n---- session start (pid %lu) ----\n", (unsigned long)GetCurrentProcessId());
-        fclose(f);
-    }
+    // Nothing is written here: crash.log is only touched when something
+    // actually dies, so a clean run leaves no log behind.
     _set_invalid_parameter_handler(on_invalid_parameter);
     _set_purecall_handler(on_purecall);
     signal(SIGABRT, on_sigabrt);

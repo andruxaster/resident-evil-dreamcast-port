@@ -10,30 +10,34 @@ class QGroupBox;
 class QLineEdit;
 class QSpinBox;
 class RunPanel;
+class BackgroundFormatRow;
+class FfmpegRow;
 
 class PcAssetsTab : public QWidget {
     Q_OBJECT
 public:
-    explicit PcAssetsTab(QWidget* parent = nullptr);
+    // `target` is the window-wide target game folder edit and `backgrounds` the
+    // window-wide background format row (both owned by MainWindow),
+    // `ffmpeg` the window-wide ffmpeg location.
+    explicit PcAssetsTab(QLineEdit* target, BackgroundFormatRow* backgrounds, FfmpegRow* ffmpeg,
+                         QWidget* parent = nullptr);
 
 private slots:
     void onSourceKindChanged();
     void onBrowseSource();
     void onBrowsePs1();
-    void onBrowseTarget();
-    void onBrowseFfmpeg();
-    void onDetectFfmpeg();
 
 private:
     void syncEnabled();
 
     QComboBox* m_sourceKind = nullptr;
     QLineEdit* m_source = nullptr;
-    QLineEdit* m_target = nullptr;
+    QLineEdit* m_target = nullptr;  // shared, not owned
+    BackgroundFormatRow* m_backgrounds = nullptr;  // shared, not owned
     QComboBox* m_version = nullptr;
     QCheckBox* m_convert = nullptr;
     QCheckBox* m_keepAvi = nullptr;
-    QLineEdit* m_ffmpeg = nullptr;
+    FfmpegRow* m_ffmpeg = nullptr;  // shared, not owned
     QGroupBox* m_ps1 = nullptr;
     QLineEdit* m_ps1Image = nullptr;
     QCheckBox* m_ps1Credits = nullptr;

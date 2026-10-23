@@ -179,15 +179,20 @@ def check_model_table(src, port_table):
 
 
 def port_emd_table():
-    """The port's g_emdPathTable, as a list of 106 paths."""
+    """The port's g_emdPathTable, as a list of 106 paths.
+
+    The table is 112 rows: the original's two 53-entry character blocks, then
+    the six bonus-outfit rows the port appends (src/game/Bonus.h). Only the
+    original 106 are returned - they are what the DC's table is compared with.
+    """
     path = os.path.join(REPO, 'src', 'game', 'EntityModelLoader.cpp')
     text = open(path, encoding='utf-8', errors='replace').read()
-    start = text.index('g_emdPathTable[106][17] = {')
+    start = text.index('g_emdPathTable[112][17] = {')
     end = text.index('};', start)
     entries = re.findall(r'"([^"]+)"', text[start:end])
-    if len(entries) != 106:
-        fail('g_emdPathTable parsed as %d entries, expected 106' % len(entries))
-    return entries
+    if len(entries) != 112:
+        fail('g_emdPathTable parsed as %d entries, expected 112' % len(entries))
+    return entries[:106]
 
 
 # ---------------------------------------------------------------------------

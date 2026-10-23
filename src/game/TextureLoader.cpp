@@ -4,9 +4,13 @@
 #include "../marni/MarniSystem.h"
 #include "../marni/MarniBits.h"
 #include "../DebugPrint.h"
+#include "../system/HdTextures.h"   // HdBufferScope (port-only)
+#include "HdText.h"                  // HdText_NoteFontPage (port-only)
 #include <stdio.h>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <vector>
 
 #undef LoadImage  // Win32 WinUser.h macro conflicts with Marni LoadImage
 
@@ -35,19 +39,23 @@ static TextureCLUTCache g_CLUTCache[256];
 // own 15-30 and 43-46. LoadTexturePage cannot be used - it adds 0xF to the
 // slot and would land on the menu's textures - so the SRV is built directly,
 // mirroring the conversion in LoadTexturePage's tail.
+//
+// The conversion is its own step (EffectTextureSheet_BuildRGBA) because the HD
+// texture layer names a texture by the bytes built here, and the room prefetch
+// (room_hd_prefetch) has to produce the same name for a mask page before the
+// camera that uses it is shown. The caller owns the returned new[] buffer.
 // ============================================================================
-void LoadEffectTextureSheet(int slot, void* timData)
+DWORD* EffectTextureSheet_BuildRGBA(void* timData, int* outW, int* outH, int* outBpp)
 {
-    if (slot < 0 || slot >= 256) return;
-    if (timData == NULL) return;
+    if (timData == NULL) return NULL;
 
     PSXTexture psxTex;
-    if (psxTex.Store((int*)timData, 1) == 0) return;
+    if (psxTex.Store((int*)timData, 1) == 0) return NULL;
 
     int w = psxTex.m_WidthPixels;
     int h = psxTex.m_Height;
     int bpp = psxTex.m_BitDepth;
-    if (w <= 0 || h <= 0 || psxTex.m_pPixelData == NULL) return;
+    if (w <= 0 || h <= 0 || psxTex.m_pPixelData == NULL) return NULL;
 
     DWORD* rgba = new DWORD[w * h];
     if (bpp == 4 || bpp == 8) {
@@ -113,6 +121,21 @@ void LoadEffectTextureSheet(int slot, void* timData)
     } else {
         for (int i = 0; i < w * h; i++) rgba[i] = 0xFF000000;
     }
+
+    *outW = w;
+    *outH = h;
+    *outBpp = bpp;
+    return rgba;
+}
+
+void LoadEffectTextureSheet(int slot, void* timData)
+{
+    if (slot < 0 || slot >= 256) return;
+
+    HdBufferScope hdSource(timData);   // port-only (HdTextures.h)
+    int w = 0, h = 0, bpp = 0;
+    DWORD* rgba = EffectTextureSheet_BuildRGBA(timData, &w, &h, &bpp);
+    if (rgba == NULL) return;
 
     if (g_TexturePageSRV[slot] != MARNI_NULL_HANDLE) {
         Marni_DX()->DestroyTexture(g_TexturePageSRV[slot]);
@@ -490,6 +513,7 @@ void ProcessTextureImage(void* imageBuffer, short textureBankID, short pageOffse
         return;
     }
 
+    HdBufferScope hdSource(imageBuffer);   // port-only (HdTextures.h): the font
     PSXTexture psxTex;
     if (psxTex.Store((int*)imageBuffer, 1) == 0) return;
 
@@ -607,6 +631,8 @@ void ProcessTextureImage(void* imageBuffer, short textureBankID, short pageOffse
             }
 
             if (useDirect) {
+                // Port-only: the HD 8x8 font draws in this page's glyph colour.
+                HdText_NoteFontPage((const unsigned int*)rgbaOut, w, h);
                 MarniCreateTexture(w, h, 32, rgbaOut, &pD3D->m_FontTexHandle);
                 delete[] rgbaOut;
                 delete[] clutRGBA;
@@ -678,6 +704,9 @@ void LoadTexturePage(void* imageBuffer, short texId, short pageOffset, int slotI
         OutputDebugStringA("[TEX] LoadTexturePage: imageBuffer is NULL!\n");
         return;
     }
+
+    // Port-only: name the page after the file it was loaded from (HdTextures.h).
+    HdBufferScope hdSource(imageBuffer);
 
     PSXTexture psxTex;
     int storeResult = psxTex.Store((int*)imageBuffer, 1);
@@ -820,6 +849,31 @@ void LoadTexturePage(void* imageBuffer, short texId, short pageOffset, int slotI
                     g_TexturePageSRV[slotIndex] = MARNI_NULL_HANDLE;
                 }
                 MarniCreateTexture(w, h, 32, rgba, &g_TexturePageSRV[slotIndex]);
+                // Port-only PS1 STP split (see g_TexturePageOpaqueSRV): a
+                // second texture with only the texels whose CLUT entry has
+                // bit 15 clear, which a PS1 blend mode leaves opaque.
+                if (g_TexturePageOpaqueSRV[slotIndex] != MARNI_NULL_HANDLE) {
+                    Marni_DX()->DestroyTexture(g_TexturePageOpaqueSRV[slotIndex]);
+                    g_TexturePageOpaqueSRV[slotIndex] = MARNI_NULL_HANDLE;
+                }
+                g_TexturePageOpaqueBase[slotIndex] = MARNI_NULL_HANDLE;
+                if (g_TexturePageSplitStp != 0) {
+                    BYTE* src = (BYTE*)psxTex.m_pPixelData;
+                    for (int i = 0; i < w * h; i++) {
+                        int idx;
+                        if (bpp == 4) {
+                            BYTE pair = src[(i / w) * (w / 2) + (i % w) / 2];
+                            idx = ((i % w) & 1) ? (pair >> 4) : (pair & 0xF);
+                        } else {
+                            idx = src[i];
+                        }
+                        rgba[i] = ((clut[idx] & 0x8000) == 0) ? clutRGBA[idx] : 0;
+                    }
+                    // Not the file's picture: it must not get the file's HD one.
+                    HdSourceScope hdNone(NULL, 0, 0);
+                    MarniCreateTexture(w, h, 32, rgba, &g_TexturePageOpaqueSRV[slotIndex]);
+                    g_TexturePageOpaqueBase[slotIndex] = g_TexturePageSRV[slotIndex];
+                }
                 g_TexturePageWidth[slotIndex] = w;
                 g_TexturePageHeight[slotIndex] = h;
                 g_TexturePageBpp[slotIndex] = bpp;
@@ -908,6 +962,11 @@ void LoadTexturePage(void* imageBuffer, short texId, short pageOffset, int slotI
                     g_TexturePageSRV[slotIndex] = MARNI_NULL_HANDLE;
                 }
                 MarniCreateTexture(w, h, 32, rgba, &g_TexturePageSRV[slotIndex]);
+                if (g_TexturePageOpaqueSRV[slotIndex] != MARNI_NULL_HANDLE) {
+                    Marni_DX()->DestroyTexture(g_TexturePageOpaqueSRV[slotIndex]);
+                    g_TexturePageOpaqueSRV[slotIndex] = MARNI_NULL_HANDLE;
+                }
+                g_TexturePageOpaqueBase[slotIndex] = MARNI_NULL_HANDLE;
                 g_TexturePageWidth[slotIndex] = w;
                 g_TexturePageHeight[slotIndex] = h;
                 g_TexturePageBpp[slotIndex] = 16;
@@ -938,6 +997,9 @@ void LoadShadowMaskTexture(void* imageBuffer, int slotBase)
         OutputDebugStringA("[TEX] LoadShadowMaskTexture: imageBuffer is NULL!\n");
         return;
     }
+    // Port-only (HdTextures.h): named before the CLUT is flattened in place
+    // below, while the buffer still holds the file.
+    HdBufferScope hdSource(imageBuffer);
 
     int slotIndex = slotBase + 0x2F;
     int slotOffset = slotIndex * 0x37C;
@@ -1321,6 +1383,81 @@ void SetupTexturePageHandles(int slotIndex, int pageIndex)
 }
 
 // ============================================================================
+// HD item icons (port-only, system/HdTextures.h)
+//
+// LoadItemImage copies one item's 40x30 icon out of item_all.pix into the
+// item page at (88, slot * 32), and LoadImage uploads the whole 256x256 page
+// again - a page whose contents are whatever the player carries, so its hash
+// never names anything twice. Each icon is named instead, after the file and
+// the item: "HD/USA/data/item_all/05.webp" (LoadImage_SetHdIconKey, set by
+// LoadItemImage around its LoadImage call). The page remembers which icon is
+// where, and when one of them has an HD picture the page is uploaded at HD
+// size: the page scaled up, each named icon's HD picture over its slot. The
+// callers keep the page's logical 256x256 size.
+// ============================================================================
+static char s_hdIconKey[160] = "";
+
+void LoadImage_SetHdIconKey(const char* key)
+{
+    if (key == NULL) {
+        s_hdIconKey[0] = '\0';
+        return;
+    }
+    strncpy(s_hdIconKey, key, sizeof(s_hdIconKey) - 1);
+    s_hdIconKey[sizeof(s_hdIconKey) - 1] = '\0';
+}
+
+struct HdIconRegion {
+    int x, y, w, h;
+    std::string key;
+};
+
+// The page `page` (256x256) with every region that has an HD picture drawn
+// from it, into `out` (scale * 256 square). False when no region has one.
+static bool ComposeHdIconPage(const DWORD* page, const std::vector<HdIconRegion>& regions,
+                              std::vector<DWORD>* out, int* outSize)
+{
+    if (!HdTextures_Active() || regions.empty()) return false;
+    struct Found { const HdIconRegion* r; HdPixels px; int w, h; };
+    std::vector<Found> found;
+    int scale = 1;
+    for (size_t i = 0; i < regions.size(); i++) {
+        Found f;
+        f.r = &regions[i];
+        if (!HdTextures_FindNamed(regions[i].key.c_str(), &f.px, &f.w, &f.h)) continue;
+        const int s = (f.w + regions[i].w - 1) / regions[i].w;
+        if (s > scale) scale = s;
+        found.push_back(f);
+    }
+    if (found.empty()) return false;
+    if (scale > 8) scale = 8;
+    const int size = 256 * scale;
+    out->assign((size_t)size * size, 0);
+    for (int y = 0; y < size; y++) {
+        const DWORD* src = page + (y / scale) * 256;
+        DWORD* dst = &(*out)[(size_t)y * size];
+        for (int x = 0; x < size; x++) dst[x] = src[x / scale];
+    }
+    for (size_t i = 0; i < found.size(); i++) {
+        const HdIconRegion& r = *found[i].r;
+        const DWORD* hd = (const DWORD*)found[i].px->data();
+        const int rw = r.w * scale, rh = r.h * scale;
+        for (int y = 0; y < rh; y++) {
+            const int py = r.y * scale + y;
+            if (py < 0 || py >= size) continue;
+            const DWORD* row = hd + (size_t)(y * found[i].h / rh) * found[i].w;
+            for (int x = 0; x < rw; x++) {
+                const int px = r.x * scale + x;
+                if (px < 0 || px >= size) continue;
+                (*out)[(size_t)py * size + px] = row[x * found[i].w / rw];
+            }
+        }
+    }
+    *outSize = size;
+    return true;
+}
+
+// ============================================================================
 // LoadImage (0x0046d3b0)
 // Marni System PSYQ LoadImage equivalent.
 // Copies raw pixel data from main memory into a CMarniBits surface within the
@@ -1417,6 +1554,8 @@ void LoadImage(int srcData, int srcSlot, int dstSlot, short format,
     static VRAMPage s_vramPages[VRAM_PAGE_MAX_SLOTS];
     static int s_vramInit = 0;
     if (!s_vramInit) { memset(s_vramPages, 0, sizeof(s_vramPages)); s_vramInit = 1; }
+    // Port-only: the named icons on each page (HD item icons, above).
+    static std::vector<HdIconRegion> s_vramIcons[VRAM_PAGE_MAX_SLOTS];
 
     int vramIdx = srcOff & (VRAM_PAGE_MAX_SLOTS - 1);
     if (srcData != 0 && bpp == 2 && (int)width > 0 && (int)height > 0 && vramIdx >= 0 && vramIdx < VRAM_PAGE_MAX_SLOTS) {
@@ -1458,6 +1597,23 @@ void LoadImage(int srcData, int srcSlot, int dstSlot, short format,
             int clutIndex = 2;
             WORD* clutPalette = clut->clutData + clutIndex * 256;
 
+            // Port-only: what this write covers is no longer the icon that
+            // was there; it is the named icon, if LoadItemImage named one.
+            std::vector<HdIconRegion>& icons = s_vramIcons[vramIdx];
+            for (size_t i = 0; i < icons.size();) {
+                const HdIconRegion& r = icons[i];
+                if (r.x < dstX + pixW && dstX < r.x + r.w && r.y < dstY + pixH && dstY < r.y + r.h)
+                    icons.erase(icons.begin() + i);
+                else
+                    ++i;
+            }
+            if (s_hdIconKey[0] != '\0') {
+                HdIconRegion r;
+                r.x = dstX; r.y = dstY; r.w = pixW; r.h = pixH;
+                r.key = s_hdIconKey;
+                icons.push_back(r);
+            }
+
             for (int row = 0; row < pixH; row++) {
                 for (int col = 0; col < pixW; col++) {
                     BYTE idx = src8[row * pixW + col];
@@ -1498,6 +1654,10 @@ void LoadImage(int srcData, int srcSlot, int dstSlot, short format,
             }
         }
 
+        // Port-only: the page at HD size when one of its icons has a picture.
+        std::vector<DWORD> hdPage;
+        int hdSize = 0;
+        const bool hd = ComposeHdIconPage(page, s_vramIcons[vramIdx], &hdPage, &hdSize);
         for (int d = 0; d < vp->numDests; d++) {
             int slot = vp->destSlots[d];
             if (slot >= 0 && slot < 256) {
@@ -1505,7 +1665,11 @@ void LoadImage(int srcData, int srcSlot, int dstSlot, short format,
                     Marni_DX()->DestroyTexture(g_TexturePageSRV[slot]);
                     g_TexturePageSRV[slot] = MARNI_NULL_HANDLE;
                 }
-                MarniCreateTexture(VRAM_PAGE_W, VRAM_PAGE_H, 32, page, &g_TexturePageSRV[slot]);
+                if (hd && Marni_DX() != NULL)
+                    g_TexturePageSRV[slot] = Marni_DX()->CreateTexture(hdSize, hdSize, 32,
+                                                                       hdPage.data(), NULL, NULL);
+                if (g_TexturePageSRV[slot] == MARNI_NULL_HANDLE)
+                    MarniCreateTexture(VRAM_PAGE_W, VRAM_PAGE_H, 32, page, &g_TexturePageSRV[slot]);
                 g_TexturePageWidth[slot] = VRAM_PAGE_W;
                 g_TexturePageHeight[slot] = VRAM_PAGE_H;
                 g_TexturePageBpp[slot] = 16;

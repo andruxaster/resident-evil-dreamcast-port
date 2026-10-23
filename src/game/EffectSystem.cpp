@@ -24,9 +24,11 @@
 #include "Entities.h"
 #include "BioCard.h"
 #include "dc/ArrangeStages.h"   // room_effect_page_entry()
+#include "saturn/SaturnBattle.h"
 #include "../DebugPrint.h"
 #include <cstring>
 #include <cstdlib>
+#include "entities/EntityCommon.h"
 
 // ---------------------------------------------------------------------------
 // Cross-file symbols
@@ -736,7 +738,13 @@ static int effect_projectile_hit_check(int range, short x, short z)
     if (pPVar != NULL) {
         if (check_weapon_line_of_sight((VECTOR*)pPVar->scaMatrixData.localMatrix.t) == 0) {
             if (pPVar->isBeingAttackedFlag == 0) {
-                if ((g_EnemiesList[0].id == 3) || (g_EnemiesList[0].id == 4)) {
+                // Saturn Battle Game: the spiders' venom does not poison. GAME5
+                // 0x06049D4A-0x06049D56 tests the battle bit right after the
+                // id test and branches over the two rand() calls and the
+                // `+0xDC |= 2` / `+0x174 = 0x96` pair when it is set; the damage
+                // below is still applied. The run has no blue herb to cure it.
+                if (((g_EnemiesList[0].id == ENEMY_WEB_SPINNER) || (g_EnemiesList[0].id == ENEMY_BLACK_TIGER)) &&
+                    !(g_bSaturnMode && g_saturnBattleActive)) {
                     if ((g_RandSeed & 1) * ((unsigned int)g_RandSeed & 1) != 0) {
                         pPVar->healthStatusFlags |= 2;
                         *(unsigned char*)((char*)pPVar + 0x174) = 0x96;
@@ -2153,24 +2161,25 @@ static void effect_behavior_floor_stop1(void)
 }
 
 // ============================================================================
-// Behavior 54 (0x0040ead0) - random spin: give each rotation axis a random
-// speed of +-5 or +-15 (the even/odd bits of two draws).
+// Behavior 54 (0x0040ead0; PS1 SLUS_001.70 0x8001ef84, identical) - random
+// spin: every frame, give each axis of the velocity header a random speed of
+// +-5 or +-15. Two rand() draws per axis, six per frame: the first picks the
+// magnitude (even -> 15, odd -> 5), the second the sign (even -> -1).
 // ============================================================================
 static void effect_behavior_random_spin(void)
 {
     Effect* eff = &g_effectPool[g_activeEffectIndex];
 
-    // magnitude: even draw -> 15, odd -> 5; sign: even draw -> -1, odd -> +1
-    int mag = ((g_RandSeed & 1) == 0) ? 15 : 5;
-    int dir = ((g_RandSeed & 1) == 0) ? -1 : 1;
+    int mag = ((rand() & 1) == 0) ? 15 : 5;
+    int dir = ((rand() & 1) == 0) ? -1 : 1;
     eff->rotSpeedX = (short)(mag * dir);
 
-    mag = ((g_RandSeed & 1) == 0) ? 15 : 5;
-    dir = ((g_RandSeed & 1) == 0) ? -1 : 1;
+    mag = ((rand() & 1) == 0) ? 15 : 5;
+    dir = ((rand() & 1) == 0) ? -1 : 1;
     eff->rotSpeedY = (short)(mag * dir);
 
-    mag = ((g_RandSeed & 1) == 0) ? 15 : 5;
-    dir = ((g_RandSeed & 1) == 0) ? -1 : 1;
+    mag = ((rand() & 1) == 0) ? 15 : 5;
+    dir = ((rand() & 1) == 0) ? -1 : 1;
     eff->rotSpeedZ = (short)(mag * dir);
 }
 
@@ -2491,7 +2500,15 @@ static void effect_submit_sprite(Effect* eff, short screenX, short screenY,
     unsigned char* uv = (unsigned char*)eff->uvDataBackup;
 
     // ---- texture descriptor (0x0047c6d8-0x0047c79b) ----
-    g_TextureDesc.flags = ((unsigned int)(eff->animHeader[10] >> 6) << 0x16) | 0x40;
+    // The header WORD at +0x32 (animHeader[10..11]), not its low byte:
+    // 0x0047c6df `MOV AX,[+0x32]; SHR AX,6; SHL EAX,0x16; MOV AL,0x40` (PS1
+    // EffectActor_UpdateAndRender: the same ushort >> 6 << 0x16). Header bit k
+    // lands on GsSPRITE attribute bit k+16: bits 12-13 are the semi-
+    // transparency rate (28-29) and bit 14 - animHeader[11] & 0x40 - its enable
+    // (30). Reading only the byte dropped all of animHeader[11], so every
+    // semi-transparent effect (the shoot-the-camera glass, header 0x4003) drew
+    // opaque.
+    g_TextureDesc.flags = ((unsigned int)(AH_USHORT(eff, 10) >> 6) << 0x16) | 0x40;
     g_TextureDesc.width = (unsigned short)*(unsigned char*)(eff->vramInfoBackup + 2);
     g_TextureDesc.height = (unsigned short)*(unsigned char*)(eff->vramInfoBackup + 3);
     g_TextureDesc.pivotX = 0x80 - (unsigned short)uv[2];
@@ -2680,8 +2697,10 @@ static void effect_submit_sprite(Effect* eff, short screenX, short screenY,
     // does the enemy colouring ----
     //
     // the OG's effect path serves page variant 0 - SubmitEffectSprite 
-    // (0x0046d9b0) indexes g_TexturePageTable[textureId*223] with no variant, 
-    // and GetTextureVariant is always 0 for effect descriptors.
+    // (0x0046d9b0) indexes g_TexturePageTable[textureId*223] with no variant;
+    // a semi-transparent effect descriptor does report a variant (the PS1 blend
+    // bits above), but SubmitEffectSprite only turns that into
+    // SPRITE_FLAG_VARIANT, never into a page variant.
     // The per-tint CLUT-row redirect lives ONLY in
     // AddSprite_Ex/AddTintSprite_Ex (room static sprites). The old
     // port-side redirect (SRV 120+sheetSlot*4+clutRow) fabricated that
@@ -2732,9 +2751,32 @@ static void effect_submit_sprite(Effect* eff, short screenX, short screenY,
         }
     }
 
+    // ---- port-only: the PS1 blend ----
+    //
+    // The PS1 has no band-table blend for effects: EffectActor_UpdateAndRender
+    // (SLUS_001.70 0x80022d58) hands the GsSPRITE straight to GsSortSprite, and
+    // the GPU blends it from the attribute word built above - bit 30 enables
+    // semi-transparency, bits 28-29 pick the rate (ABR) - and only for texels
+    // whose CLUT entry carries STP. The PC instead takes blendMode from
+    // g_EffectBlendTable and ignores the attribute (the descriptor's variant only
+    // sets SPRITE_FLAG_VARIANT, which nothing reads), so the shoot-the-camera
+    // glass (header 0x4003, CLUT row 2 all STP) drew opaque. The port follows
+    // the PS1 rule for every effect; the shipped data uses ABR 0 and ABR 3 only.
+    int ps1Blend = EFFECT_BLEND_OPAQUE;
+    {
+        unsigned int attr = AH_USHORT(eff, 10);
+        unsigned int row = (unsigned int)(unsigned short)g_TextureDesc.clutY;
+        if (row > 3) row = 3;
+        if ((attr & 0x4000) != 0 && eff->effectType < 50
+            && ((g_effectSpriteStpRows[eff->effectType] >> row) & 1) != 0) {
+            ps1Blend = (int)((attr >> 12) & 3);
+        }
+    }
+
     int submitted = SubmitEffectSprite(&g_TextureDesc, (int)depthArg, texSlot,
                                        color[0], color[1], color[2],
-                                       scaleXadd, scaleYadd, (int)blendMode, (short)brightness);
+                                       scaleXadd, scaleYadd, (int)blendMode, (short)brightness,
+                                       ps1Blend);
     (void)submitted;
 
     unsigned int depthSort = depth >> 4;

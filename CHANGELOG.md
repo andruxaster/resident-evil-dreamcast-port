@@ -1,5 +1,53 @@
 # Changelog
 
+## [1.4.0](https://github.com/ecruells/resident-evil-pc-decomp/compare/residentevil-v1.3.0...residentevil-v1.4.0) (2026-10-23)
+
+
+### Features
+
+* added game options men ([17d5a1a](https://github.com/ecruells/resident-evil-pc-decomp/commit/17d5a1a42e182243e613ef2fc6439d64629bff32))
+* added jap saturn version support ([8922aa0](https://github.com/ecruells/resident-evil-pc-decomp/commit/8922aa0b440dd2974fa9675fe3eb89320ef631b8))
+* added saturn mode flag in save game ([baf672b](https://github.com/ecruells/resident-evil-pc-decomp/commit/baf672be379fc254421ec07fb8dbc45db1fac711))
+* added saturns fmvs migration ([81a04bc](https://github.com/ecruells/resident-evil-pc-decomp/commit/81a04bc1361cd4d4cce702cc5bd273ea9b20b9ba))
+* allow play battle game in OG and DC modes ([af2b6ac](https://github.com/ecruells/resident-evil-pc-decomp/commit/af2b6ac64dbdbc9514b78e71c3395680f3635d2d))
+* allow to migrate all rooms, bgs and bgms in saturns migrator ([ee1be11](https://github.com/ecruells/resident-evil-pc-decomp/commit/ee1be112b3b0506a5b128fa7aa87c10bc26ee175))
+* allow to migrate all saturn characters models from migrator ([e33f9a9](https://github.com/ecruells/resident-evil-pc-decomp/commit/e33f9a9e40d038c6b3499d950929634b8b334a44))
+* **bump:** version bump ([9cdb25d](https://github.com/ecruells/resident-evil-pc-decomp/commit/9cdb25d6be7bca779a90aaea75eb3c0442e65b65))
+* expand save slots and display game mode and timestamp description for selected slot ([ac4dd45](https://github.com/ecruells/resident-evil-pc-decomp/commit/ac4dd455b3b949325ef3b7ef819b2f5c70990b68))
+* hd textures and videos support added ([b7cfd06](https://github.com/ecruells/resident-evil-pc-decomp/commit/b7cfd068280af67cf9f74ccbecadeff3f3057b7e))
+* implemented full Tick behaviour code ([a86b009](https://github.com/ecruells/resident-evil-pc-decomp/commit/a86b009146d0d3c1c14f1f76a7f8796ae57098cd))
+* implemented western difficulty for DC and Saturn modes, optional for PC OG ([5158428](https://github.com/ecruells/resident-evil-pc-decomp/commit/515842801deea0c821332949ef7a5dc07d5dc99f))
+* restore ps1 alpha blending for effects like glass and smoke ([852ffdd](https://github.com/ecruells/resident-evil-pc-decomp/commit/852ffdd43e5b588a41b8ce359bae3c3742ccbd68))
+* saturn version port implemented ([e19a8f6](https://github.com/ecruells/resident-evil-pc-decomp/commit/e19a8f6734ba0ff3ccc4cec55b40f1c70fd89760))
+
+
+### Bug Fixes
+
+* assets migrator build error with gcc16 in linux ([84f4233](https://github.com/ecruells/resident-evil-pc-decomp/commit/84f4233239f11439f782afd5f6155fd2a8187996))
+* audio resets when game gains focus after losing it ([66d8147](https://github.com/ecruells/resident-evil-pc-decomp/commit/66d814774d25080d809214aa14afdea95c6e8227))
+* bad HD texture for models with no HD texture present ([0f6342f](https://github.com/ecruells/resident-evil-pc-decomp/commit/0f6342f2ef299680e3b924b725d5494d5f962769))
+* battle game clock keeps running when arena is cleared and paused then inventory/itembox is open ([9a39607](https://github.com/ecruells/resident-evil-pc-decomp/commit/9a39607ccd5347a23adac6f1010690f9a77d7bf5))
+* battle game timer 2x slower ([cb9090d](https://github.com/ecruells/resident-evil-pc-decomp/commit/cb9090da797aebf32e7eca1259ff2f266a56cda7))
+* beheaded corpse always in first death of a game session in the YOU DIE screen ([2110064](https://github.com/ecruells/resident-evil-pc-decomp/commit/21100642578b695f452a4e43204beaaca0252c3c))
+* death screen text waving effect different than original game ([d91d056](https://github.com/ecruells/resident-evil-pc-decomp/commit/d91d05686942ae1cb3daf2e3535d347e212661dc))
+* enter water gate room playing as jill in linux version makes the game crash ([3af25c5](https://github.com/ecruells/resident-evil-pc-decomp/commit/3af25c5c9ab14b98c928f9b66172374e66b32b2a))
+* game option menu opening with inventory key ([0a54933](https://github.com/ecruells/resident-evil-pc-decomp/commit/0a54933c8837f10a9c5cf4226aa284c56cc16d35))
+* invisible 3d objects on arch linux ([bbff159](https://github.com/ecruells/resident-evil-pc-decomp/commit/bbff159f3299f5fc9e55e3328420b244083f7baa))
+* jills prologue fmv cut delayed in censored versions ([24df8c7](https://github.com/ecruells/resident-evil-pc-decomp/commit/24df8c795b6df2964e0119c5d09d39b70f4899e6))
+* kicked zombie head looks squashed ([c6104cc](https://github.com/ecruells/resident-evil-pc-decomp/commit/c6104cca9fd0846837de08f38b3d8971c54fec4b))
+* make jill need inks ribbons in jpn saturn and dc modes ([22cbecc](https://github.com/ecruells/resident-evil-pc-decomp/commit/22cbeccfc744d11a2388be1239bc83794383ceee))
+* missing ps1 sounds from migrator ([ff19dc3](https://github.com/ecruells/resident-evil-pc-decomp/commit/ff19dc3feb5b2b0eea9646cfa7966673e5a51d45))
+* no ammo stack up when inventory is full ([3285aa6](https://github.com/ecruells/resident-evil-pc-decomp/commit/3285aa6761fe4e8b5b21b6d6df9e9d1a8753abf5))
+* patch saturns wardrobe to allow exclusive outfit change from RDT ([1ccbbe0](https://github.com/ecruells/resident-evil-pc-decomp/commit/1ccbbe00004432eff48c72f98e111a9a6aa9a70d))
+* saturn main lab, jill scene plays chris scene instead ([dadd74e](https://github.com/ecruells/resident-evil-pc-decomp/commit/dadd74eadd1a4089448d7e127b8b318313b58e62))
+* shoot camera effect trigger without aiming the camera and implement DC effect duration fix ([7fe9280](https://github.com/ecruells/resident-evil-pc-decomp/commit/7fe92801f916259a9fd2a4fc8eed60259cc87a40))
+* spiders can still poison you in battle game ([a874bcd](https://github.com/ecruells/resident-evil-pc-decomp/commit/a874bcd1a4b9f2963177987f75f9abfef0401688))
+* swapped map and wrong sfx issues; implemented ps1 pixel blending for maps rendering ([10e1d10](https://github.com/ecruells/resident-evil-pc-decomp/commit/10e1d109b52de0be43c1d18acd10484e30b699a7))
+* tyrant blasted limbs are not black and has wrong positions ([ad284a0](https://github.com/ecruells/resident-evil-pc-decomp/commit/ad284a0adafe62ac66123c5e00723fcb778a7d03))
+* wobling healthbar in battle game scoring screen ([c6a355e](https://github.com/ecruells/resident-evil-pc-decomp/commit/c6a355ea3af90dc2bf48f5c27d2099d43a74e6d4))
+* yawn ai bug in battle game ([fb6b7fc](https://github.com/ecruells/resident-evil-pc-decomp/commit/fb6b7fc45454cf889d9e29621a9dc2a3edebca7a))
+* zombies in room 707 instead of hunters when using debug menu room change ([15aab70](https://github.com/ecruells/resident-evil-pc-decomp/commit/15aab707dd196d31c69902138f74d5412b49719f))
+
 ## [1.3.0](https://github.com/ecruells/resident-evil-pc-decomp/compare/residentevil-v1.2.0...residentevil-v1.3.0) (2026-09-27)
 
 

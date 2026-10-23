@@ -27,6 +27,45 @@ static const int kFrameIntervalMs = 33;
 static const BOOL kFrameLimiterEnabled = TRUE;
 
 // ---------------------------------------------------------------------------
+// Display settings (platform.h): recorded here, applied by the loop below.
+// ---------------------------------------------------------------------------
+static BOOL s_displayApplyPending = FALSE;
+
+void plat_display_request_apply(void)
+{
+    s_displayApplyPending = TRUE;
+}
+
+// Restart (platform.h): the loop ends as it does when the window is closed,
+// and main() re-executes the binary after its own teardown.
+static BOOL s_restartRequested = FALSE;
+extern void plat_single_instance_release(void);   // config.cpp
+
+void plat_request_restart(void)
+{
+    s_restartRequested = TRUE;
+    g_bQuitFlag = TRUE;
+}
+
+void plat_request_quit(void)
+{
+    g_bQuitFlag = TRUE;
+}
+
+BOOL plat_display_desktop_size(int* width, int* height)
+{
+    SDL_DisplayMode mode;
+    if (SDL_GetDesktopDisplayMode(0, &mode) != 0) {
+        if (width)  *width = 0;
+        if (height) *height = 0;
+        return FALSE;
+    }
+    if (width)  *width = mode.w;
+    if (height) *height = mode.h;
+    return TRUE;
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -188,9 +227,23 @@ int main(int argc, char** argv)
                 running = 0;
                 break;
             case SDL_WINDOWEVENT:
-                if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) g_bWindowFocused = TRUE;
-                else if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) g_bWindowFocused = FALSE;
+                // 0x004411e2 (WM_ACTIVATE): the focus flag, and the sounds
+                // paused with the game.
+                if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
+                    g_bWindowFocused = TRUE;
+                    ResumePausedSounds();
+                }
+                else if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+                    g_bWindowFocused = FALSE;
+                    PauseSounds();
+                }
                 else if (e.window.event == SDL_WINDOWEVENT_CLOSE) running = 0;
+                else if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+                    // A fullscreen switch lands asynchronously on some window
+                    // managers; let the backend re-read the drawable size.
+                    MarniDX* dx = Marni_DX();
+                    if (dx != NULL) dx->HandleWindowMessage(NULL, WM_SIZE, 0, 0);
+                }
                 break;
             case SDL_KEYDOWN:
                 plat_key_event(e.key.keysym.scancode, TRUE);
@@ -204,6 +257,22 @@ int main(int argc, char** argv)
         }
 
         if (!running || g_bQuitFlag) break;
+
+        // Display settings changed in the title screen's options menu
+        // (platform.h): applied here, between two frames.
+        if (s_displayApplyPending) {
+            s_displayApplyPending = FALSE;
+            MarniDX* dx = Marni_DX();
+            if (dx != NULL) {
+                dx->ChangeDisplayMode(g_dwScreenWidth, g_dwScreenHeight, g_bFullScreen);
+            }
+            if (!g_bFullScreen) {
+                SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+            }
+            SDL_ShowCursor(g_bFullScreen ? SDL_DISABLE : SDL_ENABLE);
+            SDL_GL_SetSwapInterval(g_bVSync ? 1 : 0);
+        }
+
         if (!g_bWindowFocused) { SDL_Delay(1); continue; }
 
         DWORD now = plat_time_ms();
@@ -293,5 +362,14 @@ int main(int argc, char** argv)
     SDL_GL_DeleteContext(ctx);
     SDL_DestroyWindow(window);
     SDL_Quit();
+
+    if (s_restartRequested) {
+        // The lock is an flock on an open descriptor, which exec would carry
+        // into the new image - and the new image would then fail to take it.
+        plat_single_instance_release();
+        execv("/proc/self/exe", argv);
+        perror("[RE1] restart failed");
+        return 1;
+    }
     return 0;
 }

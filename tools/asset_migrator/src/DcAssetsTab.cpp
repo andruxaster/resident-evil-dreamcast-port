@@ -1,19 +1,19 @@
 #include "DcAssetsTab.h"
 
+#include "BackgroundFormatRow.h"
+#include "FfmpegRow.h"
 #include "RunPanel.h"
 #include "Worker.h"
 #include "core/Migrate.h"
 
 #include <QCheckBox>
 #include <QComboBox>
-#include <QCoreApplication>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
-#include <QStandardPaths>
 #include <QVBoxLayout>
 
 namespace {
@@ -29,24 +29,24 @@ QWidget* pathRow(QLineEdit* edit, QPushButton* browse) {
 
 }  // namespace
 
-DcAssetsTab::DcAssetsTab(QWidget* parent) : QWidget(parent) {
+DcAssetsTab::DcAssetsTab(QLineEdit* target, BackgroundFormatRow* backgrounds,
+                         FfmpegRow* ffmpeg, QWidget* parent)
+    : QWidget(parent), m_target(target), m_backgrounds(backgrounds),
+      m_ffmpeg(ffmpeg) {
     m_image = new QLineEdit(this);
     auto* browseImage = new QPushButton(tr("Browse..."), this);
 
-    m_target = new QLineEdit(this);
-    m_target->setText(QCoreApplication::applicationDirPath());
-    auto* browseTarget = new QPushButton(tr("Browse..."), this);
 
     m_base = new QComboBox(this);
     m_base->addItem(tr("USA (North American / GOG)"), (int)re1::AssetVersion::USA);
     m_base->addItem(tr("Japanese (Biohazard)"), (int)re1::AssetVersion::JPN);
 
     m_convert = new QCheckBox(tr("Convert movies (STR -> MP4)"), this);
-    m_convert->setChecked(true);
+    m_convert->setChecked(false);
     m_subs = new QCheckBox(
         tr("Prologue FMV subtitles (JIMAKU*.RGB -> JPN/data/jimaku*.png)"),
         this);
-    m_subs->setChecked(true);
+    m_subs->setChecked(false);
     m_subs->setToolTip(
         tr("The Japanese PS1 prologue subtitles ([Game] Ps1FmvSubtitles=1).\n"
            "They are written into the JPN tree's Data folder, not the DC "
@@ -65,27 +65,12 @@ DcAssetsTab::DcAssetsTab(QWidget* parent) : QWidget(parent) {
            "base content, so this reports it as an error instead. It writes "
            "nothing; untick it to skip the check."));
 
-    m_ffmpeg = new QLineEdit(this);
-    m_ffmpeg->setText(QStringLiteral("ffmpeg"));
-    auto* browseFfmpeg = new QPushButton(tr("Browse..."), this);
-    auto* detectFfmpeg = new QPushButton(tr("Detect"), this);
-    auto* ffmpegRow = new QWidget();
-    {
-        auto* l = new QHBoxLayout(ffmpegRow);
-        l->setContentsMargins(0, 0, 0, 0);
-        l->addWidget(m_ffmpeg, 1);
-        l->addWidget(browseFfmpeg);
-        l->addWidget(detectFfmpeg);
-    }
-
     auto* form = new QFormLayout();
     form->addRow(tr("Disc image:"), pathRow(m_image, browseImage));
-    form->addRow(tr("Target game folder:"), pathRow(m_target, browseTarget));
     form->addRow(tr("Base tree:"), m_base);
     form->addRow(QString(), m_convert);
     form->addRow(QString(), m_subs);
     form->addRow(QString(), m_verify);
-    form->addRow(tr("ffmpeg:"), ffmpegRow);
 
     m_run = new RunPanel(this);
 
@@ -111,10 +96,6 @@ DcAssetsTab::DcAssetsTab(QWidget* parent) : QWidget(parent) {
     layout->addWidget(m_run, 1);
 
     connect(browseImage, &QPushButton::clicked, this, &DcAssetsTab::onBrowseImage);
-    connect(browseTarget, &QPushButton::clicked, this, &DcAssetsTab::onBrowseTarget);
-    connect(browseFfmpeg, &QPushButton::clicked, this, &DcAssetsTab::onBrowseFfmpeg);
-    connect(detectFfmpeg, &QPushButton::clicked, this, &DcAssetsTab::onDetectFfmpeg);
-    connect(m_convert, &QCheckBox::toggled, this, &DcAssetsTab::syncEnabled);
 
     m_run->setTaskFactory([this]() -> Worker* {
         re1::DcMigrationOptions opts;
@@ -124,7 +105,9 @@ DcAssetsTab::DcAssetsTab(QWidget* parent) : QWidget(parent) {
         opts.convertMovies = m_convert->isChecked();
         opts.fmvSubtitles = m_subs->isChecked();
         opts.verify = m_verify->isChecked();
-        opts.ffmpegPath = m_ffmpeg->text().toStdString();
+        opts.ffmpegPath = m_ffmpeg->path();
+        opts.backgroundFormat = m_backgrounds->format();
+        opts.webpQuality = m_backgrounds->quality();
         return new Worker(
             [opts](const re1::Progress& p, QString& error) {
                 std::string err;
@@ -133,12 +116,6 @@ DcAssetsTab::DcAssetsTab(QWidget* parent) : QWidget(parent) {
                 return ok;
             });
     });
-
-    syncEnabled();
-}
-
-void DcAssetsTab::syncEnabled() {
-    m_ffmpeg->setEnabled(m_convert->isChecked());
 }
 
 void DcAssetsTab::onBrowseImage() {
@@ -146,27 +123,4 @@ void DcAssetsTab::onBrowseImage() {
         this, tr("Select the Director's Cut disc image"), m_image->text(),
         tr("Disc images (*.bin *.cue *.iso);;All files (*)"));
     if (!f.isEmpty()) m_image->setText(f);
-}
-
-void DcAssetsTab::onBrowseTarget() {
-    const QString d = QFileDialog::getExistingDirectory(
-        this, tr("Select the game folder"), m_target->text());
-    if (!d.isEmpty()) m_target->setText(d);
-}
-
-void DcAssetsTab::onBrowseFfmpeg() {
-    const QString f = QFileDialog::getOpenFileName(
-        this, tr("Select ffmpeg"), m_ffmpeg->text(),
-        tr("ffmpeg (ffmpeg*.exe);;All files (*)"));
-    if (!f.isEmpty()) m_ffmpeg->setText(f);
-}
-
-void DcAssetsTab::onDetectFfmpeg() {
-    const QString f = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
-    if (!f.isEmpty()) {
-        m_ffmpeg->setText(f);
-        m_run->appendLog(tr("Found ffmpeg: %1").arg(f));
-    } else {
-        m_run->appendLog(tr("ffmpeg was not found on PATH."));
-    }
 }

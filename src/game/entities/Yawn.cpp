@@ -79,6 +79,7 @@
 #include "EntityCommon.h"
 #include "../../Globals.h"
 #include "../BioCard.h"
+#include "../saturn/SaturnBattle.h"
 #include <cstring>
 #include <cstdlib>
 
@@ -900,9 +901,16 @@ void yawn_action_bite(void)
 
                 // Only the FIRST Yawn (entity id 13) poisons, and only if the
                 // serum has not already been taken.
+                //
+                // Saturn Battle Game: the flag is still raised but the venom is
+                // not applied - GAME5 0x060806DC-0x060806F6 tests the battle bit
+                // between the Flg_on and the `+0xDC |= 0x20`, and skips the OR
+                // when it is set. The run has no serum to cure it with.
                 if (ENTITY->id == 0x0d && Flg_ck((int)&g_ScenarioFlags, SCENARIO_FLAG_YAWN_SERUM) == 0) {
                     Flg_on((int)&g_ScenarioFlags2, SCENARIO2_FLAG_YAWN_POISONED);
-                    g_playerEntity.healthStatusFlags |= 0x20;
+                    if (!(g_bSaturnMode && g_saturnBattleActive)) {
+                        g_playerEntity.healthStatusFlags |= 0x20;
+                    }
                 }
 
                 eub(ENTITY, 0x17c) = 0xff;
@@ -1948,7 +1956,20 @@ void yawn_pick_action_normal(void)
             eub(ENTITY, 0x17f) = 0;
         }
         // Low health -> flee.
-        if (ew(ENTITY, 0x88) < 0xaf0) {
+        //
+        // Saturn: only outside the Battle Game. GAME5 0x06080048-0x06080068:
+        //
+        //   0608004E  cmp/gt #0x0AEF,hp ; bt skip      ; hp > 2799 -> no flee
+        //   0608005E  and #0x80000000 ; tst ; bf skip  ; battle bit SET -> no flee
+        //   06080064  state word 0x01010700            ; flee
+        //
+        // so the Saturn's campaign Yawn flees at 2800 exactly like the PC's, and
+        // arena 5's Yawn (ROOM8050's single enemy_set: id 0x0D, behaviour byte
+        // 0x02, the free-roaming tree) never does - it has 350 HP, below the
+        // threshold from the first frame, so without this it would bolt at once.
+        // ONE clause removed, not a change of tree - see yawn_select_behavior
+        // for why switching trees is the wrong fix.
+        if (ew(ENTITY, 0x88) < 2800 && !(g_bSaturnMode && g_saturnBattleActive)) {
             set_state_word(0x70101);
         }
     }
@@ -2003,7 +2024,17 @@ void yawn_pick_action_scripted(void)
 // ============================================================================
 // yawn_select_behavior @ 0x00405810
 // Manhattan distance to the player into g_playerDisplacement, then dispatch on
-// behavior_flags & 7 (table 0x004b1a20).
+// behavior_flags & 7 (table 0x004b1a20 = Saturn GAME5 0x0609FD88 - the two
+// tables are identical: [0]/[2] free-roaming, [4]/[6] cutscene, odd NULL).
+//
+// Arena 5's Yawn carries behaviour byte 0x02, so it runs the free-roaming tree,
+// and that is correct. Its Saturn-specific change is ONE clause, not the tree:
+// the low-health flee is unreachable (see yawn_pick_action_normal). Switching
+// it to the cutscene tree instead is tempting - that is the Second-Yawn
+// behaviour - and wrong: the cutscene tree also drops the wedged-reposition
+// clause, so a snake that jams against the arena's collision has no way out,
+// stands still and never reaches bite range. Keep the free-roaming tree and lose
+// only the flee.
 // ============================================================================
 void yawn_select_behavior(void)
 {
@@ -2059,7 +2090,14 @@ void yawn_check_actions(void)
 // ============================================================================
 void yawn_init(void)
 {
-    set_state_word(0x00000101);   // state 1, ignore 0, behavior 1, action_state 0
+    // 0x00404cf9: MOV [ENTITY+0x84], 0x10001 - state 1, +0x85 = 0, behaviour 1
+    // (move), action_state 0. +0x85 must start at 0: it gates the decision tree
+    // (yawn_state_check), and neither idle nor move ever clears it. A Yawn that
+    // keeps this word - behaviour byte 2 or 6, i.e. one already in the room, like
+    // the Battle Game arena's - would otherwise slither forward and never look
+    // for the player until a hit (yawn_damaged_run) happened to clear the byte.
+    // The entrance path below overwrites +0x85/+0x86 anyway.
+    set_state_word(0x00010001);
 
     ENTITY->scaMatrixData.field_00 = 0;
     eub(ENTITY, 0x8a) = 0;
@@ -2079,6 +2117,21 @@ void yawn_init(void)
         } else {
             ew(ENTITY, 0x88) = 0x0190;
         }
+    } else if (g_bSaturnMode && g_saturnBattleActive) {
+        // Saturn Battle Game (GAME5 0x0607F29A-0x0607F2EC): the opening HP is
+        // chosen by the battle bit, bit 31 of g_SystemFlags 0x060A67D0 + 0xA50,
+        // which the module entry sets for mode byte 2 (0x0602B9AC-0x0602B9C0):
+        //
+        //   0607F29A  mov.l #0x80000000,r1 ; and r1,r2 ; tst r2,r2
+        //   0607F2A0  bf/s 0x0607F2E8          ; bit SET -> 0x015E
+        //   0607F2A6  mov.w #0x0BEA,r1         ; bit clear (fall-through)
+        //
+        // `tst` raises T when the bit is CLEAR and `bf` branches when T is
+        // clear, so the branch is the Battle Game: arena 5's Yawn opens at
+        // 0x015E = 350, and the campaign keeps the PC's 0x0BEA = 3050. (This
+        // was first read the other way round, which gave the Saturn's campaign
+        // Yawn 350 HP and made the arena one the long fight.)
+        ew(ENTITY, 0x88) = 0x015e;
     }
 
     eub(ENTITY, 0xbe) = 0;
@@ -2336,15 +2389,25 @@ void yawn_update(void)
             }
             if ((eub(ENTITY, 0x8a) & 7) == 0) {
                 // Serum taken -> the snake only takes 5 per tick instead of 15.
-                if (Flg_ck((int)&g_ScenarioFlags, SCENARIO_FLAG_SECOND_PLAYTHROUGH) == 0) {
+                //
+                // The one place Western difficulty does NOT take the PC's
+                // second-playthrough branch: the PS1 USA and DC overlays
+                // (STAGE2 / STAGE7: sh 0x800c532c, a single -0xf and no -5 and
+                // no joint test - identical in SLUS_001.70's STAGE2.EXE
+                // 0x8011673c and the DC's 0x80115fc0) and the Saturn (GAME1
+                // 0x06077FF4 / GAME5 0x0607F8CC, a flat add #-15) all do a flat
+                // 15 per tick. It equals the PC's first-playthrough branch, so
+                // Western takes that one.
+                const bool flatHit = western_difficulty();
+                if (flatHit || Flg_ck((int)&g_ScenarioFlags, SCENARIO_FLAG_SECOND_PLAYTHROUGH) == 0) {
                     g_EnemiesList[0].health = (short)(g_EnemiesList[0].health - 0xf);
                 } else {
                     g_EnemiesList[0].health = (short)(g_EnemiesList[0].health - 5);
                 }
                 // A hit on joints 0-9 (the front half) with the serum taken
-                // does another 15.
+                // does another 15 (PC second playthrough only).
                 JointStruct* hit = (JointStruct*)(uintptr_t)ENTITY->scd_target_ptr;
-                if (hit->index < 10 && Flg_ck((int)&g_ScenarioFlags, SCENARIO_FLAG_SECOND_PLAYTHROUGH) != 0) {
+                if (!flatHit && hit->index < 10 && Flg_ck((int)&g_ScenarioFlags, SCENARIO_FLAG_SECOND_PLAYTHROUGH) != 0) {
                     g_EnemiesList[0].health = (short)(g_EnemiesList[0].health - 0xf);
                 }
                 g_EnemiesList[0].angle = (short)(g_EnemiesList[0].angle

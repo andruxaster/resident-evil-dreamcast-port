@@ -1,4 +1,6 @@
 // PlayerAnimations.cpp - Player animation state machines (decompiled from Ghidra)
+#include "saturn/SaturnBattle.h"
+#include "saturn/SaturnTick.h"      // the Tick stage's bitten machine (entry 44)
 #include "../Globals.h"
 #include "../marni/MarniSystem.h"
 #include <cstdio>
@@ -2062,6 +2064,11 @@ static void player_state_init(void) // 0x00494eb0
 // ----------------------------------------------------------------------------
 static void player_dispatch_anim_fn(unsigned int index)
 {
+    // Sega Saturn, the Tick's stage: entry 44 (the bitten machine) is GAME2's own
+    // (0x0606FF78) - hurt first, decapitated when the Tick says so.
+    if (index == 44 && g_bSaturnMode && saturn_tick_player_bitten()) {
+        return;
+    }
     if (index >= 52 || g_playerAnimFunctions[index] == NULL) {
         static int lastReported = -1;
         if ((int)index != lastReported) {
@@ -4145,6 +4152,27 @@ static unsigned int player_find_aim_target(void)
 }
 
 // ============================================================================
+// Auto-aim gates (Western difficulty, Globals.h)
+// The PS1 USA / Saturn USA releases have no auto-aim: raising a weapon never
+// turns the player toward an enemy, the player rotates by hand. Verified in
+// SLUS_001.70: the gun-aim state 0 (0x8003f324) calls the reticle scan but its
+// result (entity +0x178, DAT_800c529c) is only ever written, never read, so
+// there is no reticle-follow turn; the gun hold input (0x8003f830) has no raw-pad
+// lock-on branch, so behaviour 0x1a (lock-on fire, 0x80041094) is never entered.
+// Both are the Japanese release's behaviour, which the PC release kept.
+//   player_autoaim_follow_enabled - the reticle scan and the follow turn
+//   player_lockon_enabled         - the raw-pad lock-on / knife turn entries
+// ============================================================================
+static inline bool player_autoaim_follow_enabled(void)
+{
+    return g_aimReticleEnabled != 0 && !western_difficulty();
+}
+static inline bool player_lockon_enabled(void)
+{
+    return !western_difficulty();
+}
+
+// ============================================================================
 // player_reticle_enemy @ 0x00496910
 // The aim reticle scan (live because g_aimReticleEnabled is 1 in the exe):
 // finds the nearest enemy in front, tracking standing and low (head below 1)
@@ -4212,32 +4240,50 @@ static unsigned int player_reticle_enemy(void)
 }
 
 // ============================================================================
-// weapon_lockon_effect @ 0x0045a650
-// Auto-aim lock-on visual: a fan of target billboards (type 5, depth 0x12,
-// sprite g_deadMoveValue) jittered around the current camera position, aimed
-// at the camera. The shotgun sprays four, everything else one. Runs when the
-// auto-aim raise starts for weapons 2-5.
+// weapon_shoot_camera_effect @ 0x0045a650
+// (PS1 Director's Cut: FUN_80042540 in SLUS_005.51, the same code line for line)
+//
+// The "shoot the camera" easter egg: when the gun points straight at the
+// current camera's eye, bullet-hole / cracked-glass billboards (type 5,
+// depthGroup 0x12, identity parent matrix g_deadMoveValue) are spawned just in
+// front of the lens. The shotgun scatters four, everything else one. Runs once
+// as the auto-aim fire starts, for weapons 2-5.
+//
+// The camera record (RDT+0x9C, 0x2C bytes per camera) starts with the eye
+// (v[0..2]) and the look-at point (v[3..5]).
+//
+// The aim test: two points either side of the eye (offset (isShotgun+1)*0xA0
+// across the view direction, and (isShotgun*5 +/- 5)*0x20 up/down) are taken
+// relative to the right-hand joint (0xE) and crossed with the gun direction
+// (the joint's rotation applied to (isShotgun*400, 1000, 0)). The eye is hit
+// when the gun direction lies between the two points on every axis. The .y
+// component is the horizontal (XZ) cross product, and requiring edgeL.y < 0
+// and edgeR.y >= 0 is what makes the test directional: pointing the gun AWAY
+// from the camera flips both signs and fails.
 // ============================================================================
-static void weapon_lockon_effect(void)
+static void weapon_shoot_camera_effect(void)
 {
     if (g_playerEntity.equippedWeaponId > 5) return;
     unsigned char isShotgun = (g_playerEntity.equippedWeaponId == 3) ? 1 : 0;
 
-    // Camera record for the current camera, 8 dwords at RDT+0x9C
+    // Camera record for the current camera, 8 dwords at RDT+0x9C:
+    // v[0..2] = eye, v[3..5] = look-at
     int* cam = (int*)((char*)g_RdtPointer + (unsigned int)g_roomCameraId * 0x2c + 0x9c);
     int v[8];
     for (int i = 0; i < 8; i++) v[i] = cam[i];
 
-    int dz = v[3] - v[0];          // camera span Z
-    int dx = v[5] - v[2];          // camera span X
+    int viewX = v[3] - v[0];       // view direction X (look-at - eye)
+    int viewZ = v[5] - v[2];       // view direction Z
 
-    g_animFrameIdSave = ((dx > 0) ? 0x800 : 0) + 0x400;
-    if (dz != 0) {
-        g_animFrameIdSave = ((dz < 0) ? 2 : 1) * 0x800
-                            - (unsigned int)GetAngleQuadrantValue((dx * 0x1000) / dz);
+    // Camera yaw. 0x0045a6d7: ESI = 2 - (viewX < 0), i.e. 0x1000 when the
+    // view X is positive and 0x800 when negative (PS1: same constants).
+    g_animFrameIdSave = ((viewZ > 0) ? 0x800 : 0) + 0x400;
+    if (viewX != 0) {
+        g_animFrameIdSave = ((viewX < 0) ? 1 : 2) * 0x800
+                            - (unsigned int)GetAngleQuadrantValue((viewZ * 0x1000) / viewX);
     }
 
-    // Aiming fan: rotate (isShotgun+1)*0xa0 by the camera angle
+    // The across-the-view offset: (isShotgun+1)*0xa0 rotated by the camera yaw
     JointStruct* joints = g_playerEntity.jointsStructs;
     g_svecScratch.x = (short)((isShotgun + 1) * 0xa0);
     g_svecScratch.y = 0;
@@ -4250,14 +4296,17 @@ static void weapon_lockon_effect(void)
     int wy = joints[0xe].world.t[1];
     int wz = joints[0xe].world.t[2];
 
+    // Both edges are relative to the EYE (v[0..2]) - 0x0045a77b reads the
+    // record's first dword for edgeL.x as well as edgeR.x.
     VECTOR edgeL, edgeR, aimVec;
-    edgeL.x = (v[3] - wx + g_svecScratch.x) / 0x12;
+    edgeL.x = (v[0] - wx + g_svecScratch.x) / 0x12;
     edgeL.z = (v[2] - wz + g_svecScratch.z) / 0x12;
     edgeL.y = (v[1] - wy + (int)((isShotgun * 5 + 5) * 0x20)) / 0x12;
     edgeR.x = (v[0] - wx - g_svecScratch.x) / 0x12;
     edgeR.z = (v[2] - wz - g_svecScratch.z) / 0x12;
     edgeR.y = (v[1] - wy + (int)((isShotgun * 5 - 5) * 0x20)) / 0x12;
 
+    // Gun direction: the hand joint's rotation applied to (isShotgun*400, 1000, 0)
     g_svecScratch.x = (short)(isShotgun * 400);
     g_svecScratch.y = 1000;
     g_svecScratch.z = 0;
@@ -4265,16 +4314,17 @@ static void weapon_lockon_effect(void)
     vectorMul3(&aimVec, &edgeL, &edgeL);
     vectorMul3(&aimVec, &edgeR, &edgeR);
 
-    // The fan only draws when the camera is inside the wedge
+    // The gun must point between the two edges on every axis
     if (((unsigned int)edgeL.y & 0x80000000u) == 0) return;
     if (((unsigned int)edgeR.y & 0x80000000u) != 0) return;
     if ((((unsigned int)edgeR.x ^ (unsigned int)edgeL.x) & 0x80000000u) == 0) return;
     if ((((unsigned int)edgeR.z ^ (unsigned int)edgeL.z) & 0x80000000u) == 0) return;
 
-    // Jittered billboards around the camera position
-    g_playerPosScratch.x = dz;
-    g_playerPosScratch.y = v[5] - v[3];
-    g_playerPosScratch.z = dx;
+    // Spawn point: 512 units (ONE/8) down the view direction from the eye,
+    // jittered by up to +/-0x80 per axis.
+    g_playerPosScratch.x = viewX;
+    g_playerPosScratch.y = v[4] - v[1];
+    g_playerPosScratch.z = viewZ;
     VectorNormal(&g_playerPosScratch, &g_playerPosScratch);
 
     g_playerPosScratch.x = (g_playerPosScratch.x / 8 - (rand() & 0xff)) + v[0] + 0x80;
@@ -4314,7 +4364,7 @@ static void player_behavior_12_gun_aim(void)
         if ((g_main_state_flags2 & MSF2_EFFECT_ZONE) != 0) {
             PlayEntitySnd(0);
         }
-        if (g_aimReticleEnabled != 0) {
+        if (player_autoaim_follow_enabled()) {
             g_playerEntity.weaponAimState = (unsigned short)player_reticle_enemy();
         }
         g_playerEntity.weaponAimState |= 2;
@@ -4331,7 +4381,7 @@ static void player_behavior_12_gun_aim(void)
 
     // 0x0045797f: reticle follow - a fresh fire press drops the lock; a
     // locked target (state 3) makes the player turn toward it.
-    if (g_aimReticleEnabled != 0) {
+    if (player_autoaim_follow_enabled()) {
         if ((g_button_pressed_id & 4) != 0) {
             g_playerEntity.weaponAimState = 0;
         }
@@ -4570,7 +4620,7 @@ static void player_behavior_13_gun_hold_input(void)
         }
     }
     // Raw pad bit 4 with a target lock starts the special lock-on fire.
-    if ((g_PlayerPadHeld & 0x40) != 0 && player_find_aim_target() != 0) {
+    if (player_lockon_enabled() && (g_PlayerPadHeld & 0x40) != 0 && player_find_aim_target() != 0) {
         g_playerEntity.action_behavior = 0x1a;           // 0x00459150 - not yet transcribed
         g_playerEntity.action_state = 0;
         return;
@@ -4600,8 +4650,8 @@ static void player_behavior_13_gun_hold_input(void)
 
 // ============================================================================
 // player_behavior_14_autoaim_raise @ 0x00458090 - auto-aim fire, state 0
-// Sets the auto-aim raise pose (motion (dir+2)*3), spawns the lock-on fan
-// billboards, then runs the fire state in the same frame.
+// Sets the auto-aim raise pose (motion (dir+2)*3), runs the shoot-the-camera
+// check, then runs the fire state in the same frame.
 // ============================================================================
 static void player_behavior_14_autoaim_fire(void);
 static void player_behavior_14_autoaim_raise(void)
@@ -4612,7 +4662,7 @@ static void player_behavior_14_autoaim_raise(void)
     g_playerEntity.unk_8c = 3;
     g_playerEntity.attackAnim = (unsigned char)
         ((((g_playerEntity.weaponAimFlags & 0x20) >> 4) + (g_playerEntity.weaponAimFlags >> 7) + 2) * 3);
-    weapon_lockon_effect();
+    weapon_shoot_camera_effect();
     if ((g_main_state_flags2 & MSF2_EFFECT_ZONE) != 0) {
         PlayEntitySnd(1);
     }
@@ -4641,6 +4691,7 @@ static void player_behavior_14_autoaim_fire(void)
     // ---- ammo decrement + muzzle billboard (g_weaponFireBillboard b0 = frame)
     if (g_weaponFireBillboard[weaponIdx].b0 == g_playerEntity.animation_frame_id) {
         ((unsigned char*)g_ItemSlotsPointer)[g_EquippedItemId * 2 - 1] -= 1;
+        if (g_bSaturnMode) saturn_battle_count_shot(g_playerEntity.equippedWeaponId);  // GAME5 0x060337B8
 
         if (weaponIdx == 8) {   // special weapon: alternate billboard entry
             unsigned char ammo = weapon_autoaim_check();
@@ -4842,6 +4893,7 @@ static void player_behavior_14_autoaim_holdfire(void)
                                    &g_playerPosScratch, 0);
         }
         ((unsigned char*)g_ItemSlotsPointer)[g_EquippedItemId * 2 - 1] -= 1;
+        if (g_bSaturnMode) saturn_battle_count_shot(g_playerEntity.equippedWeaponId);  // GAME5 0x060337B8
     } else {
         // special weapons: interval fire while held. The table index is the
         // weapon id shifted by -99 (0x6f -> entry 12), which is why the FX
@@ -5454,12 +5506,12 @@ static void player_behavior_12_knife_aim(void)
         g_playerEntity.isBeingAttackedFlag = 0;
         g_playerEntity.attackAnim = 5;
         g_playerEntity.unk_8c = 3;
-        if (g_aimReticleEnabled != 0) {
+        if (player_autoaim_follow_enabled()) {
             g_playerEntity.weaponAimState = (unsigned short)player_reticle_enemy();
         }
     }
 
-    if (g_aimReticleEnabled != 0) {
+    if (player_autoaim_follow_enabled()) {
         g_playerEntity.weaponAimState |= 2;
         if ((g_button_pressed_id & 4) != 0) {
             g_playerEntity.weaponAimState = 0;
@@ -5557,7 +5609,7 @@ static void player_behavior_13_knife_hold(void)
         g_playerEntity.action_state = 0;
         return;
     }
-    if ((g_PlayerPadHeld & 4) != 0 && player_find_aim_target() != 0) {
+    if (player_lockon_enabled() && (g_PlayerPadHeld & 4) != 0 && player_find_aim_target() != 0) {
         g_playerEntity.action_behavior = 0x16;   // knife auto-aim turn
         g_playerEntity.action_state = 0;
         return;
@@ -6707,7 +6759,11 @@ static void door_locked_message(unsigned int msgIndex)
 
 // 0x0041b59c: the transition. An instant full-screen black rect, one frame of
 // sleep, then StMask - not a fade. This is why the in-game door cut is instant.
-static void door_begin_transition(unsigned char* record)
+//
+// Not static: the Saturn Battle Game's arena warp hands its virtual door record
+// to this, the way GAME5's transition routine feeds its 5-byte table into the
+// same door path (saturn/SaturnBattle.cpp).
+void door_begin_transition(unsigned char* record)
 {
     g_pendingDoorRecord = (int)record;          // the room the transition will load
     g_main_state_flags |= MSF_GAMEPLAY_ACTIVE;
@@ -7225,7 +7281,9 @@ int check_typewriter(unsigned char* entry)
             g_message_flags = (unsigned short)g_message_flags & 0xffba;
             return 0;
         }
-        if ((g_playerEntity.id == 1) || (g_playerEntity.id == 5)) {
+        // The free save is the PC's first-run Jill rule; console releases have
+        // none (jill_needs_ink_ribbons, Globals.h).
+        if (((g_playerEntity.id == 1) || (g_playerEntity.id == 5)) && !jill_needs_ink_ribbons()) {
             if (Flg_ck((int)g_ScenarioFlags, SCENARIO_FLAG_SECOND_PLAYTHROUGH) == 0) {
                 g_pRoomActionEntry = entry;
                 *(unsigned short*)(entry + 2) = (unsigned short)ribbonSlot;

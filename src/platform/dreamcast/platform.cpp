@@ -560,3 +560,51 @@ void plat_cursor_show(BOOL show)      { (void)show; }
 // BG_SMOOTH_FIX: set by TexturePage_SetupFull around a room-mask load; the
 // PVR backend draws textures created meanwhile filtered (both renderers link).
 extern "C" { volatile int g_dcSmoothNext = 0; }
+
+// ---------------------------------------------------------------------------
+// MERGE140: platform API added in upstream 1.4.0
+// ---------------------------------------------------------------------------
+
+// Only used to index the HD texture folder (system/HdTextures.cpp). HD
+// textures do not fit the Dreamcast's 16 MB / 8 MB VRAM, so there is never a
+// folder: the HD layer stays inactive and costs nothing.
+BOOL plat_dir_list(const char* path, PlatDirVisit visit, void* user)
+{
+    (void)path; (void)visit; (void)user;
+    return FALSE;
+}
+
+// Saves written since 1.4.0 carry their own timestamp; this only dates older
+// ones. /ram files are recreated at every boot, so their time says nothing.
+unsigned int plat_file_mtime(const char* path)
+{
+    (void)path;
+    return 0;
+}
+
+// The DISPLAY page of the title OPTIONS: the Dreamcast has one mode, 640x480.
+void plat_display_request_apply(void) {}
+
+BOOL plat_display_desktop_size(int* width, int* height)
+{
+    if (width)  *width  = 640;
+    if (height) *height = 480;
+    return TRUE;
+}
+
+// OPTIONS > EXIT GAME: back to whatever started the game (DreamShell, the
+// BIOS menu for a disc).
+void plat_request_quit(void)
+{
+    printf("[PLAT] exit requested from the options menu\n");
+    arch_exit();
+}
+
+// OPTIONS > GAME > APPLY AND RESTART. There is no process to relaunch: the
+// console is reset, which boots the disc again. The menu waits for this
+// forever once it has asked, so it must not be a no-op.
+void plat_request_restart(void)
+{
+    printf("[PLAT] restart requested from the options menu\n");
+    arch_reboot();
+}

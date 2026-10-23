@@ -1,4 +1,5 @@
-// PngImage.cpp - Minimal PNG reader for port-only assets. See PngImage.h.
+// PngImage.cpp - Minimal PNG reader and writer for port-only assets. See
+// PngImage.h.
 //
 // The inflate follows RFC 1951 directly (canonical Huffman decode in the style
 // of zlib's puff.c); the PNG side follows the PNG specification, section 9
@@ -413,4 +414,99 @@ bool PngDecodeFirstChannel(const unsigned char* data, size_t size,
     if (width != NULL) *width = static_cast<int>(w);
     if (height != NULL) *height = static_cast<int>(h);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Writer
+// ---------------------------------------------------------------------------
+
+namespace {
+
+unsigned int Crc32(unsigned int crc, const unsigned char* p, size_t n)
+{
+    static unsigned int table[256];
+    static bool built = false;
+    if (!built) {
+        for (unsigned int i = 0; i < 256; ++i) {
+            unsigned int c = i;
+            for (int k = 0; k < 8; ++k) c = (c & 1u) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+            table[i] = c;
+        }
+        built = true;
+    }
+    crc = ~crc;
+    for (size_t i = 0; i < n; ++i) crc = table[(crc ^ p[i]) & 0xFFu] ^ (crc >> 8);
+    return ~crc;
+}
+
+void PutBE32(std::vector<unsigned char>* out, unsigned int v)
+{
+    out->push_back((unsigned char)(v >> 24));
+    out->push_back((unsigned char)(v >> 16));
+    out->push_back((unsigned char)(v >> 8));
+    out->push_back((unsigned char)v);
+}
+
+void PutChunk(std::vector<unsigned char>* out, const char* type,
+              const unsigned char* data, size_t size)
+{
+    PutBE32(out, (unsigned int)size);
+    const size_t start = out->size();
+    out->insert(out->end(), type, type + 4);
+    if (size != 0) out->insert(out->end(), data, data + size);
+    PutBE32(out, Crc32(0, out->data() + start, size + 4));
+}
+
+}  // namespace
+
+void PngEncodeRGBA(const unsigned char* rgba, int width, int height,
+                   std::vector<unsigned char>* out)
+{
+    out->clear();
+    if (rgba == NULL || width <= 0 || height <= 0) return;
+
+    // Scanlines, each led by filter type 0.
+    const size_t stride = (size_t)width * 4;
+    std::vector<unsigned char> raw;
+    raw.reserve((stride + 1) * (size_t)height);
+    for (int y = 0; y < height; ++y) {
+        raw.push_back(0);
+        raw.insert(raw.end(), rgba + (size_t)y * stride, rgba + (size_t)(y + 1) * stride);
+    }
+
+    // zlib stream of stored blocks (RFC 1950 / 1951 section 3.2.4).
+    std::vector<unsigned char> z;
+    z.reserve(raw.size() + raw.size() / 65535 * 5 + 16);
+    z.push_back(0x78);
+    z.push_back(0x01);
+    unsigned int s1 = 1, s2 = 0;
+    for (size_t pos = 0; pos < raw.size(); ) {
+        const size_t n = (raw.size() - pos > 65535) ? 65535 : raw.size() - pos;
+        z.push_back((pos + n == raw.size()) ? 1 : 0);
+        z.push_back((unsigned char)(n & 0xFF));
+        z.push_back((unsigned char)(n >> 8));
+        z.push_back((unsigned char)(~n & 0xFF));
+        z.push_back((unsigned char)((~n >> 8) & 0xFF));
+        z.insert(z.end(), raw.begin() + pos, raw.begin() + pos + n);
+        for (size_t i = 0; i < n; ++i) {
+            s1 = (s1 + raw[pos + i]) % 65521u;
+            s2 = (s2 + s1) % 65521u;
+        }
+        pos += n;
+    }
+    PutBE32(&z, (s2 << 16) | s1);
+
+    static const unsigned char kSignature[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+    out->insert(out->end(), kSignature, kSignature + 8);
+    unsigned char ihdr[13];
+    ihdr[0] = (unsigned char)(width >> 24);  ihdr[1] = (unsigned char)(width >> 16);
+    ihdr[2] = (unsigned char)(width >> 8);   ihdr[3] = (unsigned char)width;
+    ihdr[4] = (unsigned char)(height >> 24); ihdr[5] = (unsigned char)(height >> 16);
+    ihdr[6] = (unsigned char)(height >> 8);  ihdr[7] = (unsigned char)height;
+    ihdr[8] = 8;    // bit depth
+    ihdr[9] = 6;    // colour type: RGBA
+    ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+    PutChunk(out, "IHDR", ihdr, sizeof(ihdr));
+    PutChunk(out, "IDAT", z.data(), z.size());
+    PutChunk(out, "IEND", NULL, 0);
 }

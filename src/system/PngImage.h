@@ -1,4 +1,4 @@
-// PngImage.h - Minimal PNG reader for port-only assets.
+// PngImage.h - Minimal PNG reader (and writer) for port-only assets.
 //
 // The original game has no PNG support; this exists for data the port adds
 // (the PS1 FMV subtitle sets, docs/PS1_FMV_SUBTITLES.md), so those assets can be
@@ -20,3 +20,10 @@
 bool PngDecodeFirstChannel(const unsigned char* data, size_t size,
                            std::vector<unsigned char>* out,
                            int* width, int* height);
+
+// Encode width * height RGBA8 pixels (R in the lowest address) as an 8-bit
+// RGBA PNG: filter 0, stored deflate blocks, so the file is as large as the
+// pixels. Used for the texture dump (system/HdTextures.h), where being readable
+// by every image tool matters and size does not.
+void PngEncodeRGBA(const unsigned char* rgba, int width, int height,
+                   std::vector<unsigned char>* out);

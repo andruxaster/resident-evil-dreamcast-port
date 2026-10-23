@@ -67,11 +67,11 @@ static DieScreenTexEntry s_dieStripTemplate = {
     0x41000000, -128, -32, 255, 1, 0x00, 0x00, 0x01FF
 };
 
-// 0x004bd2b0 - one-shot flag: the first death screen hides joint 1 (the
-// head) by clearing its visibility bit, then clears the flag. Shared with the
-// hunter's pounce grab, which sets it (Hunter.cpp 0x00417a20); defined in
-// Globals.cpp with its image value 0x00006C6C.
-extern int DAT_004bd2b0;
+// 0x004bd2b0 - one-shot flag: the death screen hides joint 1 (the head) by
+// clearing its draw bit, then clears the flag. Set by the hunter's pounce grab
+// (Hunter.cpp 0x00417a20); defined in Globals.cpp, which explains why it
+// starts at 0 here rather than the original's 0x00006C6C.
+extern int g_dieScreenHideHead;
 
 // 0x004bd320 / 0x004bd328 - tyrant impale transform: rotation applied to
 // joint 2 and the offset applied through joint 0's transform.
@@ -151,6 +151,11 @@ void image_update(int param_1)
 
     unsigned int uVar4 = 0;
     int iVar5;
+    // The sine angle restarts at 0 for every strip (PC 0x00443550, PS1
+    // 0x8002b9e4 both reset it). Starting it at param^2*64 drew ONE column for
+    // param >= 32 and phase-shifted the rest: the slam-in's two converging
+    // bands became long smeared streaks.
+    iVar3 = 0;
     do {
         update_image_fading_(&s_dieStripTemplate, uVar1);
         g_TextureDesc.screenX = (short)(uVar4 - 0x80);
@@ -273,23 +278,23 @@ void display_die_screen(void)
 
     StMask(0, 5);
 
-    // One-shot: hide joint 1 (the head) on the first death screen.
-    if (DAT_004bd2b0 != 0) {
+    // One-shot: hide joint 1 (the head) after a hunter decapitation.
+    if (g_dieScreenHideHead != 0) {
         g_playerEntity.jointsStructs[1].flags &= 0xFE;
     }
-    DAT_004bd2b0 = 0;
+    g_dieScreenHideHead = 0;
 
     unsigned char state      = 0;   // local_a   - state machine index
     short         imageIdx   = 0x3B; // sVar4    - wave amplitude index
     unsigned char holdFrames = 0;   // local_9   - hold-state counter
     short         rectColor  = 0;   // local_c   - black overlay alpha
 
-    // The original's state machine stepped at 25fps; this port ticks at the
-    // monitor rate (~60fps), so stepping every frame made the strip slam and
-    // hold play ~2.4x fast. Step the machine on alternating frames instead
-    // (~30fps) while the draws and the main_loop-driven fades keep their rate.
-    unsigned char stepTick = 0;
-
+    // One state step and one strip draw per game tick, as in the original
+    // (and the PS1's 0x8002b508). An earlier every-other-frame gating halved
+    // the wave's speed and drew the strip at full amplitude during state 2's
+    // black ramp, which the original never does. A recording of the OG PC
+    // confirms the 30 ticks/s: the 85-tick flash clears in ~2.7 s and the
+    // 49-tick hold lasts ~1.65 s.
     for (;;) {
         // Per-frame descriptor reset (0x004431bc)
         g_TextureDesc.pivotX = 0;
@@ -301,79 +306,69 @@ void display_die_screen(void)
         g_TextureDesc.colorMulB = 0x80;
         g_TextureDesc.scaleX    = 0x1000;
 
-        stepTick ^= 1;
-        if (stepTick != 0) {
-            // State machine STEPS only (the original stepped these at 25fps;
-            // this port ticks at the monitor rate, so step on alternating
-            // frames ~30fps). The strip DRAW below runs every frame.
-            switch (state) {
-            case 0:
-                // Start the sound fade and the white-flash fade-in.
-                BuildSndFadeTbl(0xFD, 0x2B);
-                g_fade_type_id   = 1;
-                g_fading_counter = 0xFE80;
-                fade_update();
-                state = 1;
-                // fall through
-            case 1:
-                // Wait for the flash to clear, then start the reveal.
-                if ((short)g_fading_state < 0) {
-                    state = 2;
-                }
-                break;
-            case 2:
-                // Ramp the black overlay up and decay the wave amplitude.
-                if (rectColor < 0xFF) {
-                    g_rect.r = (unsigned char)rectColor;
-                    g_rect.g = (unsigned char)rectColor;
-                    g_rect.b = (unsigned char)rectColor;
-                }
-                rectColor = (short)(rectColor + 3);
-                if (0x3F < rectColor) {
-                    imageIdx = (short)(imageIdx - 1);
-                }
-                if (imageIdx < 4) {
-                    state = 3;
-                }
-                break;
-            case 3:
-                // Hold the settled text.
-                holdFrames = (unsigned char)(holdFrames + 1);
-                if (0x30 < holdFrames) {
-                    state      = 4;
-                    holdFrames = 0;
-                }
-                break;
-            case 4:
-                // Start the fade-out while the strip re-waves.
-                g_fade_type_id   = 2;
-                g_fading_counter = 0x180;
-                imageIdx         = 4;
-                fade_update();
-                state = 5;
-                break;
-            case 5:
-                imageIdx = (short)(imageIdx + 1);
-                // fall through
-            case 6:
-                // Fade-out complete -> exit.
-                if ((short)g_fading_state < 0) {
-                    goto die_screen_done;
-                }
+        switch (state) {
+        case 0:
+            // Start the sound fade and the white-flash fade-in.
+            BuildSndFadeTbl(0xFD, 0x2B);
+            g_fade_type_id   = 1;
+            g_fading_counter = 0xFE80;
+            fade_update();
+            state = 1;
+            // fall through
+        case 1:
+            // Wait for the flash to clear, then start the reveal in the same
+            // tick (the original jumps into case 2's body).
+            if ((short)g_fading_state >= 0) {
                 break;
             }
-        }
-
-        // Draw the wavy strip every frame at the current amplitude - the
-        // image_update calls are DRAWS in the original, only the amplitude
-        // index changes on the stepped frames. Without this the strip
-        // alternated with blank frames and flickered.
-        switch (state) {
+            state = 2;
+            // fall through
         case 2:
+            // Ramp the black overlay up; once it passes 0x3F, draw the strip
+            // and decay the wave amplitude (post-decrement: draw, then step).
+            if (rectColor < 0xFF) {
+                g_rect.r = (unsigned char)rectColor;
+                g_rect.g = (unsigned char)rectColor;
+                g_rect.b = (unsigned char)rectColor;
+            }
+            rectColor = (short)(rectColor + 3);
+            if (0x3F < rectColor) {
+                short amp = imageIdx;
+                imageIdx = (short)(imageIdx - 1);
+                image_update((int)amp);
+            }
+            if (imageIdx < 4) {
+                state = 3;
+            }
+            break;
         case 3:
-        case 4:
-        case 5:
+            // Hold the settled text.
             image_update((int)imageIdx);
+            holdFrames = (unsigned char)(holdFrames + 1);
+            if (0x30 < holdFrames) {
+                state      = 4;
+                holdFrames = 0;
+            }
+            break;
+        case 4:
+            // Start the fade-out while the strip re-waves.
+            g_fade_type_id   = 2;
+            g_fading_counter = 0x180;
+            imageIdx         = 4;
+            fade_update();
+            state = 5;
+            // fall through
+        case 5: {
+            short amp = imageIdx;
+            imageIdx = (short)(imageIdx + 1);
+            image_update((int)amp);
+        }
+            // fall through
+        case 6:
+            // Fade-out complete -> exit.
+            if ((short)g_fading_state < 0) {
+                goto die_screen_done;
+            }
             break;
         }
 

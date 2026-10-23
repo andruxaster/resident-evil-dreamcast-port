@@ -37,6 +37,24 @@ struct MarniDX::Impl {
     int  height = 0;
     bool ready  = false;
 
+    // The 4:3 view inside the drawable (see MarniDX::SetAspectLock). Equal to
+    // the drawable when aspectLock is off.
+    bool aspectLock = true;
+    int  viewX = 0, viewY = 0, viewW = 0, viewH = 0;
+
+    void UpdateView() {
+        viewX = 0; viewY = 0; viewW = width; viewH = height;
+        if (aspectLock && width > 0 && height > 0) {
+            if (width * 3 > height * 4) {
+                viewW = height * 4 / 3;
+                viewX = (width - viewW) / 2;
+            } else if (width * 3 < height * 4) {
+                viewH = width * 3 / 4;
+                viewY = (height - viewH) / 2;
+            }
+        }
+    }
+
     GLuint program = 0;
     GLuint vao     = 0;
     GLuint vbo     = 0;
@@ -51,6 +69,7 @@ struct MarniDX::Impl {
     struct TexSlot {
         GLuint tex = 0;
         int w = 0, h = 0;
+        unsigned int serial = 0;   // port-only: bumped on every release
     } slots[MARNI_MAX_TEXTURES];
 
     void ReleaseSlot(MarniHandle h) {
@@ -58,6 +77,7 @@ struct MarniDX::Impl {
         if (slots[h].tex != 0) glDeleteTextures(1, &slots[h].tex);
         slots[h].tex = 0;
         slots[h].w = slots[h].h = 0;
+        slots[h].serial++;
     }
 
     void ReleaseAll() {
@@ -196,6 +216,10 @@ static void ApplyBlend(MarniBlend blend)
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE);
         break;
+    case MARNI_BLEND_ADD_ALPHA:
+        glEnable(GL_BLEND);
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        break;
     case MARNI_BLEND_DISABLE:
         glDisable(GL_BLEND);
         break;
@@ -222,8 +246,8 @@ static void DrawBatch(MarniDX::Impl* p, const float* verts, int vertexCount,
 
     // Y-down ortho: (0,0) top-left -> NDC (-1,+1).
     float mvp[16] = {0};
-    mvp[0]  = 2.0f / (float)p->width;
-    mvp[5]  = -2.0f / (float)p->height;
+    mvp[0]  = 2.0f / (float)p->viewW;
+    mvp[5]  = -2.0f / (float)p->viewH;
     mvp[10] = 1.0f;
     mvp[12] = -1.0f;
     mvp[13] = 1.0f;
@@ -328,6 +352,7 @@ BOOL MarniDX::Create(HWND hWnd, int width, int height, BOOL fullScreen,
     SDL_GL_GetDrawableSize(p->window, &dw, &dh);
     p->width  = (dw > 0) ? dw : width;
     p->height = (dh > 0) ? dh : height;
+    p->UpdateView();
 
     if (!BuildPipeline(p)) return FALSE;
 
@@ -341,8 +366,8 @@ BOOL MarniDX::Create(HWND hWnd, int width, int height, BOOL fullScreen,
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
     p->ready = true;
-    if (outWidth)  *outWidth  = p->width;
-    if (outHeight) *outHeight = p->height;
+    if (outWidth)  *outWidth  = p->viewW;
+    if (outHeight) *outHeight = p->viewH;
     return TRUE;
 }
 
@@ -364,8 +389,16 @@ BOOL MarniDX::IsReady() const
 void MarniDX::GetBackBufferSize(DWORD* outWidth, DWORD* outHeight) const
 {
     Impl* p = m_pImpl;
-    if (outWidth)  *outWidth  = (p != nullptr) ? (DWORD)p->width : 0;
-    if (outHeight) *outHeight = (p != nullptr) ? (DWORD)p->height : 0;
+    if (outWidth)  *outWidth  = (p != nullptr) ? (DWORD)p->viewW : 0;
+    if (outHeight) *outHeight = (p != nullptr) ? (DWORD)p->viewH : 0;
+}
+
+void MarniDX::SetAspectLock(BOOL lock)
+{
+    Impl* p = m_pImpl;
+    if (p == nullptr) return;
+    p->aspectLock = lock != FALSE;
+    p->UpdateView();
 }
 
 int MarniDX::ChangeDisplayMode(DWORD newWidth, DWORD newHeight, BOOL fullScreen)
@@ -373,17 +406,20 @@ int MarniDX::ChangeDisplayMode(DWORD newWidth, DWORD newHeight, BOOL fullScreen)
     Impl* p = m_pImpl;
     if (p == nullptr || p->window == nullptr) return 0;
 
-    SDL_SetWindowSize(p->window, (int)newWidth, (int)newHeight);
+    // Leave fullscreen BEFORE sizing: a size set on a fullscreen window is
+    // only remembered by some window managers and dropped by others.
     if (fullScreen) {
         SDL_SetWindowFullscreen(p->window, SDL_WINDOW_FULLSCREEN_DESKTOP);
     } else {
         SDL_SetWindowFullscreen(p->window, 0);
+        SDL_SetWindowSize(p->window, (int)newWidth, (int)newHeight);
     }
 
     int dw = 0, dh = 0;
     SDL_GL_GetDrawableSize(p->window, &dw, &dh);
     if (dw > 0) p->width = dw;
     if (dh > 0) p->height = dh;
+    p->UpdateView();
     return 1;
 }
 
@@ -396,6 +432,7 @@ int MarniDX::HandleWindowMessage(HWND, UINT msg, WPARAM, LPARAM)
         SDL_GL_GetDrawableSize(m_pImpl->window, &dw, &dh);
         if (dw > 0) m_pImpl->width = dw;
         if (dh > 0) m_pImpl->height = dh;
+        m_pImpl->UpdateView();
     }
     return 1;
 }
@@ -456,6 +493,9 @@ void MarniDX::Clear(float r, float g, float b, float a)
     // fragments that happened to be no farther than last frame's surface.
     glDepthMask(GL_TRUE);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    // The whole drawable was cleared, bars included; everything drawn this
+    // frame goes into the view (GL's origin is the bottom-left corner).
+    glViewport(p->viewX, p->height - p->viewY - p->viewH, p->viewW, p->viewH);
 }
 
 void MarniDX::Present()
@@ -549,6 +589,27 @@ BOOL MarniDX::UpdateTexturePixels(MarniHandle tex, const void* pixelData,
                     GL_RGBA, GL_UNSIGNED_BYTE, pixelData);
     glBindTexture(GL_TEXTURE_2D, 0);
     return TRUE;
+}
+
+BOOL MarniDX::ReplaceTexture(MarniHandle tex, int width, int height, const void* rgba32)
+{
+    Impl* p = m_pImpl;
+    if (p == nullptr || tex == MARNI_NULL_HANDLE || tex >= MARNI_MAX_TEXTURES) return FALSE;
+    if (p->slots[tex].tex == 0 || rgba32 == nullptr || width <= 0 || height <= 0) return FALSE;
+    glBindTexture(GL_TEXTURE_2D, p->slots[tex].tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, rgba32);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    p->slots[tex].w = width;
+    p->slots[tex].h = height;
+    return TRUE;
+}
+
+unsigned int MarniDX::TextureSerial(MarniHandle tex) const
+{
+    const Impl* p = m_pImpl;
+    if (p == nullptr || tex == MARNI_NULL_HANDLE || tex >= MARNI_MAX_TEXTURES) return 0;
+    return p->slots[tex].serial;
 }
 
 void MarniDX::GetTextureSize(MarniHandle tex, int* outWidth, int* outHeight) const

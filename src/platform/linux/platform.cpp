@@ -210,6 +210,30 @@ BOOL plat_mkdir(const char* path)
     return (errno == EEXIST) ? TRUE : FALSE;
 }
 
+BOOL plat_dir_list(const char* path, PlatDirVisit visit, void* user)
+{
+    char norm[1024];
+    const char* dirPath = plat_normalize_path(path, norm, sizeof(norm));
+    DIR* d = opendir(dirPath);
+    if (d == NULL) return FALSE;
+    // readdir64 / stat64 for the reason given in plat_file_mtime: the plain
+    // calls fail on 64-bit inode numbers in this 32-bit binary.
+    struct dirent64* e;
+    while ((e = readdir64(d)) != NULL) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        BOOL isDir = (e->d_type == DT_DIR) ? TRUE : FALSE;
+        if (e->d_type == DT_UNKNOWN || e->d_type == DT_LNK) {
+            char full[1280];
+            struct stat64 st;
+            snprintf(full, sizeof(full), "%s/%s", dirPath, e->d_name);
+            isDir = (stat64(full, &st) == 0 && S_ISDIR(st.st_mode)) ? TRUE : FALSE;
+        }
+        visit(e->d_name, isDir, user);
+    }
+    closedir(d);
+    return TRUE;
+}
+
 BOOL plat_file_write(const char* path, const void* data, size_t size)
 {
     char norm[1024];
@@ -218,6 +242,19 @@ BOOL plat_file_write(const char* path, const void* data, size_t size)
     size_t written = fwrite(data, 1, size, f);
     fclose(f);
     return (written == size) ? TRUE : FALSE;
+}
+
+unsigned int plat_file_mtime(const char* path)
+{
+    char norm[1024];
+    // stat64, not stat: this is a 32-bit binary, and plain stat fails with
+    // EOVERFLOW on any file whose inode number does not fit 32 bits - which is
+    // every file on a Windows drive mounted into WSL (/mnt/c). That read as
+    // "no such file" here: saves showed no date, and the HD texture folder
+    // (system/HdTextures.cpp) was reported missing.
+    struct stat64 st;
+    if (stat64(plat_normalize_path(path, norm, sizeof(norm)), &st) != 0) return 0;
+    return (unsigned int)st.st_mtime;
 }
 
 void* plat_file_read_all(const char* path, size_t* outSize)

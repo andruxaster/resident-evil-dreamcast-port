@@ -36,6 +36,7 @@
 #include "../Globals.h"
 #include "../DebugPrint.h"
 #include "../system/AssetPath.h"
+#include "saturn/SaturnBattle.h"
 #include <cstdio>
 #include <cstring>
 
@@ -44,7 +45,7 @@
 // 0xA82 = 2690 bytes; the first 0x800 are the original's bio-card block, which
 // the port models as g_BioCard plus the input-config globals that follow it.
 // ============================================================================
-#define DBG_SAVE_FILE_SIZE      0xA82
+#define DBG_SAVE_FILE_SIZE      0xA86   // 0xA82 + the port timestamp (SAVE_OFFSET_TIMESTAMP)
 #define DBG_SAVE_BLOCK_SIZE     0x800
 #define DBG_OFFSET_PAD_REMAP    0x41C   // 32 bytes  (g_padRemapSubTable3)
 #define DBG_OFFSET_CONTROLLER   0x43C   // 1 byte    (g_controllerConfig)
@@ -129,6 +130,10 @@ static void DebugAssembleSaveFile(char* fileBuffer)
            g_JoyRemapTbl[1], 0x80);
 
     memset(fileBuffer, 0, DBG_SAVE_FILE_SIZE);
+    // Same Saturn mark as the save screen (see SAVE_MODE_SATURN_FLAG).
+    if (g_bSaturnMode && !saturn_mode_is_borrowed()) {
+        g_DcGameMode |= SAVE_MODE_SATURN_FLAG;
+    }
     memcpy(fileBuffer + 0x000, g_BioCardData, sizeof(BioCardLayout));
     memcpy(fileBuffer + DBG_OFFSET_PAD_REMAP, g_padRemapSubTable3,
            sizeof(g_padRemapSubTable3));
@@ -140,6 +145,10 @@ static void DebugAssembleSaveFile(char* fileBuffer)
     fileBuffer[DBG_OFFSET_COSTUME]    = (char)g_bCostumeVariant;
     memcpy(fileBuffer + DBG_OFFSET_JOY_BACKUP, g_joyRemapBackupJoy, 0x80);
     memcpy(fileBuffer + DBG_OFFSET_KEY_BACKUP, g_joyRemapBackupKey, 0x80);
+    unsigned int stamp = SaveTimestampNow();
+    for (int b = 0; b < 4; b++) {
+        fileBuffer[SAVE_OFFSET_TIMESTAMP + b] = (char)(stamp >> (8 * b));
+    }
 }
 
 // Adopt the character recorded in the restored card: player entity id plus

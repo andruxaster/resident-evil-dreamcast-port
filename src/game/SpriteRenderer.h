@@ -111,6 +111,30 @@ static_assert(sizeof(TextureDraw) == 0x54, "TextureDraw size mismatch");
 #define SPRITE_FLAG_VARIANT    0x08u  // GetTextureVariant() != 0; see the note
 #define SPRITE_FLAG_MIRROR_U   0x10u  // <- TEXDESC_MIRROR_U
 #define SPRITE_FLAG_MIRROR_V   0x20u  // <- TEXDESC_MIRROR_V
+// Port-only (the original never sets this bit). Variant 2 is the PS1's ABR 1,
+// background + sprite. The PC renderer has a single blend - 0x0042c090 always
+// sets SRCALPHA / INVSRCALPHA and feeds it the 0x80 from g_dwTexVariantBlend -
+// so it flattens the additive mode into the same 50% average as ABR 0, which
+// is why the 1997 PC map looks washed out next to the PS1's. The 2D menu
+// producers (display_texture, AddSprite_Ex) raise this for a variant-2
+// descriptor and the flush draws it additively instead.
+#define SPRITE_FLAG_ADDITIVE   0x40u
+// Port-only. src * alpha + dst: the PS1's ABR 1 (B + F, alpha 1) and ABR 3
+// (B + F/4, alpha 0.25) for effect sprites (SubmitEffectSprite's ps1Blend).
+#define SPRITE_FLAG_ADD_ALPHA  0x80u
+
+// SubmitEffectSprite's port-only ps1Blend argument. EFFECT_BLEND_PC keeps the
+// 1997 PC rule (the band table's blendMode is the alpha); the others are the
+// PS1 GsSPRITE blend effect_submit_sprite resolved for the sprite.
+#define EFFECT_BLEND_PC        (-2)
+#define EFFECT_BLEND_OPAQUE    (-1)   // semi-transparency off, or no STP texels
+#define EFFECT_BLEND_ABR0      0      // 0.5 B + 0.5 F
+#define EFFECT_BLEND_ABR1      1      // B + F
+#define EFFECT_BLEND_ABR2      2      // B - F (no shipped effect uses it)
+#define EFFECT_BLEND_ABR3      3      // B + F/4
+
+// The PS1 blend of a 2D menu sprite, on top of SpriteBuildFlags().
+#define TEXDESC_VARIANT_PS1_ADD 2     // GetTextureVariant() value of ABR 1
 
 // SPRITE_FLAG_VARIANT is set by every producer that builds flags from a
 // descriptor, and no draw path reads it - the translucency it implies is
@@ -153,6 +177,17 @@ static inline unsigned int SpriteBuildFlags(unsigned int textureFlags) {
     return flags;
 }
 
+// SpriteBuildFlags() for the 2D menu producers: adds SPRITE_FLAG_ADDITIVE for
+// a PS1-additive descriptor. Scene sprites (room masks, effects, the lab
+// terminal) keep the PC blend - their translucency is tuned against it.
+static inline unsigned int SpriteBuildMenuFlags(unsigned int textureFlags) {
+    unsigned int flags = SpriteBuildFlags(textureFlags);
+    if (GetTextureVariant(textureFlags) == TEXDESC_VARIANT_PS1_ADD) {
+        flags |= SPRITE_FLAG_ADDITIVE;
+    }
+    return flags;
+}
+
 // The value the original writes to TextureDraw+0x2c: g_dwTexVariantBlend
 // (0x004c2d64) indexed by the variant, scaled by the 1/256 at 0x004af29c.
 // Returns 0.0f for "no variant", which the draw path reads as OPAQUE.
@@ -187,6 +222,11 @@ int SubmitLine(short x0, short y0, short x1, short y1, unsigned short depth,
                float r, float g, float b, float alpha);
 int AddSprite(TextureDesc* texture, short depth, int tpage, int fade);
 int AddTintSprite(TextureDesc* texture, unsigned short fade);
+// Port-only: AddTintSprite for a glyph of the HD 8x8 font (HdText.cpp) - a
+// fractional game rectangle sampling `tex` (a MarniHandle) at u0..v1.
+int AddTintSpriteRect(TextureDesc* texture, unsigned short brightness,
+                      float gameX, float gameY, float w, float h,
+                      float u0, float v0, float u1, float v1, DWORD32 tex);
 // transZ is the shadow's composed-matrix t[2] (view-space Z of the quad's
 // origin). The original stores it in the OT record and compares it against the
 // fade polys already inserted this frame to keep two overlapping shadows off
@@ -200,10 +240,21 @@ int AddFadePoly(unsigned short alpha, int transZ, int sortZ, int tpage,
                 const int* wz, const int* cu, const int* cv, int count);
 int SubmitEffectSprite(TextureDesc* texture, int depth, int textureId,
                        unsigned char r, unsigned char g, unsigned char b,
-                       int scaleX, int scaleY, int blendMode, short brightness);
+                       int scaleX, int scaleY, int blendMode, short brightness,
+                       int ps1Blend = EFFECT_BLEND_PC);
 
 int DrawPrim_SpriteLarge(int* params, unsigned short alpha, int tpage,
                          unsigned int u, unsigned int v, unsigned int clut);
+
+// Port-only (type 13): a draw callback that runs at its command's place in the
+// sorted queue, inside the 2D pass (SPRITE_CLASS_NORMAL). For geometry with no
+// counterpart among the original's primitives; the Japanese Saturn's rotating
+// "BIO HAZARD" results logo (saturn/SaturnBattle.cpp) is the one user. `fn`
+// gets the game-space -> backbuffer scale the rest of the pass draws with.
+// Returns 0 when the queue (or the small callback table) is full.
+#define SPRITE_TYPE_CALLBACK 13
+typedef void (*SpriteDrawCallback)(float scaleX, float scaleY);
+int AddSpriteCallback(SpriteDrawCallback fn, unsigned int depthSort);
 
 // ============================================================================
 // The texture slot the room-mask page lives in.

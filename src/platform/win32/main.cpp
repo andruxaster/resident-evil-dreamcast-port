@@ -5,6 +5,8 @@
 #include "Globals.h"
 #include "system/AssetPath.h"
 #include "system/ConfigFile.h"
+#include "platform/platform.h"
+#include "marni/MarniSystem.h"
 
 // Forward declarations for local helpers
 static int  CheckSystemRequirements(void);
@@ -16,6 +18,10 @@ static BOOL LoadIniConfiguration(void);
 static BOOL InitSoftwareRenderer(void);
 static BOOL CreateGameWindow(int nCmdShow);
 static int  RunMessageLoop(void);
+static void RelaunchIfRequested(void);
+
+// Marks a process started by plat_request_restart (see RelaunchIfRequested).
+#define RESTART_ARG "--restarted"
 
 // ============================================================================
 // LoadIniConfiguration - Read settings from config.ini
@@ -222,6 +228,9 @@ int PASCAL WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // --- 0x00441d71: Main message loop ---
     int exitCode = RunMessageLoop();
     
+    // Port: OPTIONS > GAME > APPLY asked for a restart (platform.h).
+    RelaunchIfRequested();
+
     // Final cleanup (this is after GetMessage returns 0 or error)
     return exitCode;
 }
@@ -276,6 +285,16 @@ int CheckSystemRequirements(void)
 BOOL CheckSingleInstance(void)
 {
     g_hMutex = OpenMutexA(MUTEX_ALL_ACCESS, FALSE, "RESIDENT EVIL PC DoubleStart Check");
+    // Port: started by a restart (plat_request_restart). The instance that
+    // started us is on its way out and its mutex dies with it; give it a few
+    // seconds rather than refusing to run.
+    if (g_hMutex != NULL && strstr(GetCommandLineA(), RESTART_ARG) != NULL) {
+        for (int i = 0; i < 50 && g_hMutex != NULL; i++) {
+            CloseHandle(g_hMutex);
+            Sleep(100);
+            g_hMutex = OpenMutexA(MUTEX_ALL_ACCESS, FALSE, "RESIDENT EVIL PC DoubleStart Check");
+        }
+    }
     if (g_hMutex != NULL) {
         CloseHandle(g_hMutex);
         return FALSE;
@@ -534,6 +553,125 @@ static const BOOL kFrameLimiterEnabled = TRUE;
 // clock (0x1A5E0 == 3600*30) and every scripted frame count assume.
 static const int kFrameIntervalMs = 33;
 
+// ============================================================================
+// Display settings (platform.h). The request is recorded by the game and
+// applied here, from the message pump, between two frames: SetWindowPos sends
+// WM_SIZE straight into WindowProc, which resizes the swap chain, and none of
+// that may run on a game task's stack.
+// ============================================================================
+static BOOL s_displayApplyPending = FALSE;
+
+void plat_display_request_apply(void)
+{
+    s_displayApplyPending = TRUE;
+}
+
+// ============================================================================
+// Restart (platform.h). The request closes the window exactly as its close
+// button does, so every exit path the game already has runs unchanged; WinMain
+// starts the new process once the message loop has returned.
+// ============================================================================
+static BOOL s_restartRequested = FALSE;
+
+void plat_request_restart(void)
+{
+    if (g_hWnd == NULL) return;
+    s_restartRequested = TRUE;
+    PostMessageA(g_hWnd, WM_SYSCOMMAND, SC_CLOSE, 0);
+}
+
+void plat_request_quit(void)
+{
+    if (g_hWnd == NULL) return;
+    PostMessageA(g_hWnd, WM_SYSCOMMAND, SC_CLOSE, 0);
+}
+
+static void RelaunchIfRequested(void)
+{
+    if (!s_restartRequested) return;
+
+    // The same command line, marked so the new instance waits for this one's
+    // single-instance mutex to go away instead of refusing to start.
+    static char cmd[2048];
+    const char* current = GetCommandLineA();
+    if (strstr(current, RESTART_ARG) != NULL) {
+        snprintf(cmd, sizeof(cmd), "%s", current);
+    } else {
+        snprintf(cmd, sizeof(cmd), "%s " RESTART_ARG, current);
+    }
+
+    STARTUPINFOA si = { sizeof(si) };
+    PROCESS_INFORMATION pi = {};
+    if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    } else {
+        OutputDebugStringA("[RESTART] CreateProcess failed\n");
+    }
+}
+
+BOOL plat_display_desktop_size(int* width, int* height)
+{
+    MONITORINFO mi = { sizeof(mi) };
+    HMONITOR mon = MonitorFromWindow(g_hWnd, MONITOR_DEFAULTTOPRIMARY);
+    if (mon == NULL || !GetMonitorInfoA(mon, &mi)) {
+        if (width)  *width = 0;
+        if (height) *height = 0;
+        return FALSE;
+    }
+    if (width)  *width  = mi.rcMonitor.right - mi.rcMonitor.left;
+    if (height) *height = mi.rcMonitor.bottom - mi.rcMonitor.top;
+    return TRUE;
+}
+
+static void ApplyPendingDisplaySettings(void)
+{
+    if (!s_displayApplyPending || g_hWnd == NULL) return;
+    s_displayApplyPending = FALSE;
+
+    MONITORINFO mi = { sizeof(mi) };
+    if (!GetMonitorInfoA(MonitorFromWindow(g_hWnd, MONITOR_DEFAULTTONEAREST), &mi)) return;
+
+    // The same two styles CreateGameWindow picks between (0x00441bdc /
+    // 0x00441c15), plus WS_VISIBLE because the window is already shown.
+    if (g_bFullScreen) {
+        SetWindowLongA(g_hWnd, GWL_STYLE, WS_POPUP | WS_CLIPCHILDREN | WS_VISIBLE);
+        SetWindowLongA(g_hWnd, GWL_EXSTYLE, WS_EX_TOPMOST);
+        // Borderless: the window covers the monitor and the WM_SIZE this
+        // sends takes the back buffer to the monitor's size (MarniDX keeps the
+        // 4:3 picture inside it).
+        SetWindowPos(g_hWnd, HWND_TOPMOST,
+                     mi.rcMonitor.left, mi.rcMonitor.top,
+                     mi.rcMonitor.right - mi.rcMonitor.left,
+                     mi.rcMonitor.bottom - mi.rcMonitor.top,
+                     SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    } else {
+        const DWORD style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE;
+        SetWindowLongA(g_hWnd, GWL_STYLE, style);
+        SetWindowLongA(g_hWnd, GWL_EXSTYLE, WS_EX_APPWINDOW);
+        RECT rc = { 0, 0, (LONG)g_dwScreenWidth, (LONG)g_dwScreenHeight };
+        AdjustWindowRect(&rc, style, FALSE);
+        const int w = rc.right - rc.left;
+        const int h = rc.bottom - rc.top;
+        const int x = mi.rcWork.left + ((mi.rcWork.right - mi.rcWork.left) - w) / 2;
+        const int y = mi.rcWork.top + ((mi.rcWork.bottom - mi.rcWork.top) - h) / 2;
+        SetWindowPos(g_hWnd, HWND_NOTOPMOST, x, y, w, h,
+                     SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    }
+
+    CMarniDirect3D* pD3D = (CMarniDirect3D*)g_pMarniDirect3D;
+    if (pD3D != NULL) pD3D->m_isFullScreen = g_bFullScreen;
+
+    // ShowCursor is a counter; drive it to the wanted side rather than
+    // trusting how many times it was called before.
+    if (g_bFullScreen) {
+        while (ShowCursor(FALSE) >= 0) {}
+    } else {
+        while (ShowCursor(TRUE) < 0) {}
+    }
+    // g_bVSync is read by MarniDX::Present on every flip - nothing to apply.
+}
+
 int RunMessageLoop(void)
 {
     MSG msg = {};
@@ -616,6 +754,9 @@ int RunMessageLoop(void)
             g_bMCINotifyFlag = TRUE;
         }
         
+        // Port: display settings changed in the title screen's options menu.
+        ApplyPendingDisplaySettings();
+
         // 0x00441e2b: Update game status in shared memory
         UpdateGameStatus();
         

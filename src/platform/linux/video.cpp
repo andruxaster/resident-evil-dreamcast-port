@@ -534,6 +534,18 @@ BOOL plat_video_open_and_play(const char* path, int playToMs)
     return TRUE;
 }
 
+int plat_video_probe_duration_ms(const char* path)
+{
+    AVFormatContext* fmt = NULL;
+    if (avformat_open_input(&fmt, path, NULL, NULL) < 0) return 0;
+    int ms = 0;
+    if (avformat_find_stream_info(fmt, NULL) >= 0 && fmt->duration > 0) {
+        ms = (int)(fmt->duration / (AV_TIME_BASE / 1000));
+    }
+    avformat_close_input(&fmt);
+    return ms;
+}
+
 void plat_video_play_from(int fromMs)
 {
     if (s_fmt == NULL) return;

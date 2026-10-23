@@ -910,9 +910,12 @@ void room_event_item_pickup(void)
     g_pickedItemId = record[8];
     unsigned char itemId = record[8];
     unsigned char quantity = record[9];
-    // ink ribbon always pickup 3 units
+    // The PC release overrides every ink ribbon pick-up to 3 units. The PS1 USA
+    // and Saturn USA take the record's own quantity, and every ribbon record in
+    // their RDTs is 2 (the PC RDTs carry 2s and 3s; tools verified the 20 PS1
+    // records), so Western difficulty (Globals.h) pins 2.
     if (itemId == ITEM_INK_RIBBONS) {
-        quantity = 3;
+        quantity = western_difficulty() ? 2 : 3;
     }
     // DC TRAINING and ADVANCED* double the pick-up: the DC's IncludeCurrentItem
     // (SLUS_005.51 0x8002ce28) shifts the record quantity left once for ammo and
@@ -924,8 +927,13 @@ void room_event_item_pickup(void)
         (g_selectedItemId == ITEM_INK_RIBBONS)) {
         // Stackable: merge into an existing slot of the same item id.
         unsigned char slotCount = (unsigned char)((4 - ((g_playerEntity.id & 3) != 1)) * 2);
+        // Two registers in the original: the capacity stays put for the
+        // "is there a free slot" test below, a copy counts the scan down.
+        // Counting slotCount itself down made that test fail for a stack in
+        // a late slot, so the overflow went whole into a new slot.
+        unsigned char remaining = slotCount;
         unsigned char idx = 0;
-        while (slotCount != 0) {
+        while (remaining != 0) {
             unsigned char* slot = (unsigned char*)g_ItemSlotsPointer + (unsigned int)idx * 2;
             if (slot[0] == itemId) {
                 unsigned short merged = (unsigned short)(slot[1] + (unsigned short)quantity);
@@ -939,7 +947,7 @@ void room_event_item_pickup(void)
                     break;
                 }
             }
-            slotCount--;
+            remaining--;
             idx++;
         }
     }
@@ -1064,7 +1072,10 @@ extern unsigned int Flg_ck(int baseAddr, unsigned int bitIndex);
 
 void check_desk_state(void)
 {
+    // Port: part of the PC's first-run Jill rules, which the DC dropped along
+    // with the ribbon ones (jill_needs_ink_ribbons, Globals.h).
     if ((g_stageId == STAGE_GUARDHOUSE) && (g_roomId == ROOM_003) && ((g_playerEntity.id & 3) == 1) &&
+        !jill_needs_ink_ribbons() &&
         (Flg_ck((int)g_ScenarioFlags, SCENARIO_FLAG_SECOND_PLAYTHROUGH) == 0)) {
         g_desk_check_state = 0;
     }
@@ -1136,7 +1147,9 @@ void check_typewriter_state(void)
     switch (g_typewriter_state) {
     case 1:
         g_typewriter_id = *(unsigned short*)((char*)g_pRoomActionEntry + 2);
-        if (((g_playerEntity.id == 1) || (g_playerEntity.id == 5)) &&
+        // Port: the ribbon-free prompt is the PC's first-run Jill rule
+        // (jill_needs_ink_ribbons, Globals.h).
+        if (((g_playerEntity.id == 1) || (g_playerEntity.id == 5)) && !jill_needs_ink_ribbons() &&
             (Flg_ck((int)g_ScenarioFlags, SCENARIO_FLAG_SECOND_PLAYTHROUGH) == 0)) {
             set_message_display(224, 0xff);   // "Will you save your progress?"
         } else {

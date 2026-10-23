@@ -597,7 +597,7 @@ unsigned char g_titleOptionsFading = 0;   // 0x00d22776
 unsigned char g_titleSelectionId = 0;     // 0x00d22774
 short         g_titleDemoTime = 0;        // 0x00d22788 - demo countdown
 unsigned char g_titleHoldTimer = 0;       // DC title submenu hold counter (port-added)
-short         g_titleTexturePageData[8] = {}; // 0x00d22778 - per-selection tpage
+short         g_titleTexturePageData[12] = {}; // 0x00d22778 - per-selection tpage
 int           g_sceneRenderParam = 0;     // 0x004d6300
 DWORD          g_titlePrimType = 0;        // 0x004d6398
 DWORD          g_primParam = 0;            // 0x004d63e0
@@ -640,6 +640,9 @@ int   g_fmvPlayCount = 0;               // 0x004bae34
 void* g_TexturePageTable = NULL;
 DWORD g_TexturePageTable_DAT[256] = {};
 MarniHandle g_TexturePageSRV[256] = {};
+MarniHandle g_TexturePageOpaqueSRV[256] = {};   // port-only, see Globals.h
+MarniHandle g_TexturePageOpaqueBase[256] = {};
+int g_TexturePageSplitStp = 0;
 int   g_TexturePageWidth[256] = {};
 int   g_TexturePageHeight[256] = {};
 int   g_TexturePageBpp[256] = {};
@@ -964,11 +967,19 @@ DWORD         g_RoomCameraDataCopy = 0;
 // 0x00d1fdd0 - Dead player move matrix pointer (holds → 0x4bca68, identity matrix)
 DWORD         g_deadMoveValue = 0;
 
-// 0x004bd2b0 - shared one-shot grab flag. The hunter's pounce grab sets it to
-// 1 (Hunter.cpp, 0x00417a20); the death screen consumes and clears it while
-// hiding the player's head joint (0x00443181). Image value 0x00006C6C - the
-// tail of the "dinput.dll" string it overlaps in .rdata.
-int           DAT_004bd2b0 = 0x00006C6C;
+// 0x004bd2b0 - one-shot "the hunter took the head" flag. The hunter's pounce
+// grab sets it to 1 (Hunter.cpp, 0x00417a20); the death screen consumes and
+// clears it while hiding the player's head joint (0x00443181).
+//
+// Original bug, fixed here: in ResidentEvil.exe this dword overlaps the tail
+// of the "dinput.dll" string ("ll\0\0", image value 0x00006C6C), so it starts
+// NON-ZERO and the first death screen of every session beheaded the corpse
+// whatever killed the player. The PS1 (SLUS_001.70 and SLUS_005.51) has no
+// such flag: its display_die_screen never touches joint 1, and the hunter's
+// pounce track hides the head itself (STAGE3.EXE 0x801174fc OG / 0x8011677c
+// DC). Starting at 0 makes the PC behave the same: headless only after a
+// hunter decapitation.
+int           g_dieScreenHideHead = 0;
 
 // 0x00d1fdcc - Light direction matrix pointer (holds → g_lightMatrix)
 DWORD         g_lightMatrixPtr = 0;
@@ -1500,7 +1511,11 @@ static constexpr auto s_gm60 = STR("You can't use it here.");
 static constexpr auto s_gm61 = STR("You can't use it here.");
 // [62] 0x004BFC27 - Don't need to use at the moment
 static constexpr auto s_gm62 = STR("You don't need to use this\\nitem at the moment.");
-// [63] - NULL (pointer 0x73755C2E is out of bounds)
+// [63] - NULL in the original (pointer 0x73755C2E is out of bounds). Port-only:
+// the Sega Saturn Battle Game's opening message (GAME5 0x0609E979, in the Saturn's
+// global message table).
+static constexpr auto s_gm63 = STR(
+    "You must defeat\\nall the enemies\\pTand enter into the\\nmysterious zone.\\dT");
 
 unsigned char* global_messages[64] = {
     (unsigned char*)s_gm00.bytes,  // [0]  Will you take the [L1]
@@ -1566,7 +1581,7 @@ unsigned char* global_messages[64] = {
     (unsigned char*)s_gm60.bytes,  // [60] Can't use it here.
     (unsigned char*)s_gm61.bytes,  // [61] Can't use it here.
     (unsigned char*)s_gm62.bytes,  // [62] Don't need to use at the moment.
-    NULL,                            // [63] (out of bounds pointer)
+    (unsigned char*)s_gm63.bytes,  // [63] Saturn Battle Game opening (port-only)
 };
 
 // ============================================================================
@@ -1733,6 +1748,7 @@ unsigned char  g_effectSpriteSheetSlot[50] = {};   // per-sprite SRV sheet slot 
 unsigned char  g_effectSpriteBandV[50] = {};       // per-sprite page V offset (see Globals.h)
 unsigned char  g_effectSpritePageV[50] = {};       // room sprites: page V blit offset (see Globals.h)
 unsigned char  g_effectSpriteClutRows[50] = {};    // per-sprite sheet CLUT row count (see Globals.h)
+unsigned char  g_effectSpriteStpRows[50] = {};     // per-sprite CLUT rows drawn with PS1 STP (see Globals.h)
 
 // Entity joint animation copy base pointer
 int            DAT_00be0e00 = 0;               // 0x00be0e00
@@ -1763,8 +1779,9 @@ DWORD  g_animObjectBuffer[0x680] = {};
 // 0x00c14dc0 - ESP effect data
 BYTE   g_shootDirEspBuffer[73728] = {};
 
-// 0x00c26dc0 - General purpose data buffer (832728 bytes)
-BYTE    g_DataBuffer[832728];
+// 0x00c26dc0 - General purpose data buffer (832728 bytes in the original;
+// the port's headroom is explained in Globals.h)
+BYTE    g_DataBuffer[DATA_BUFFER_ORIGINAL_SIZE + DATA_BUFFER_PORT_HEADROOM];
 
 // Display image buffer for TIM slide loading (at 0x00cf22ac in original)
 BYTE    g_TimImageBuffer[187160+20] = {};
@@ -1866,7 +1883,10 @@ char           g_pakStringBuf[512] = {};
 // 0xA4-byte record carved from the RDT VB region by room_set (count = RDT
 // omodel_slot_count) and filled by cmd_omodel_set; walked by
 // update_room_objects / check_climb_object and targetable from SCD scripts.
-void*          g_omodel_table[8] = {};
+// 14 slots: the original has no other symbol between 0x00d226b0 and
+// 0x00d226e8, and the water gate room (ROOM301x) declares 9 omodel slots - with
+// 8 the ninth pointer landed on whatever the linker placed next.
+void*          g_omodel_table[14] = {};
 
 // 0x00d21360 - Item model record table. One 0xA4-byte record per RDT item_models
 // pair (count = RDT item_count), carved from the VB region by room_set and filled
@@ -2003,6 +2023,8 @@ int            g_DcDifficulty = DC_DIFFICULTY_STANDARD;
 bool           g_bPs1EndingCredits = false;
 bool           g_bPs1FmvSubtitles = false;
 bool           g_bSkipUnskippableFmv = false;
+bool           g_bSaturnBattleGame = false;
+bool           g_bWesternDifficultyOption = false;
 
 // ---------------------------------------------------------------------------
 // re1_rand / re1_srand (port-only)

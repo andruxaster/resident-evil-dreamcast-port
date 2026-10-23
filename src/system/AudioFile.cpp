@@ -203,10 +203,10 @@ int AudioFile_Load(const char* path, AudioFileData* out)
     return 1;
 }
 
-int AudioFile_TreeHasPs1Audio(void)
+int AudioFile_TreeHasCDAudio(void)
 {
     char rooted[260];
-    const char* p = ResolveAssetRoot(GAME_DATA_ROOT "sound/ps1audio.txt", rooted, sizeof(rooted));
+    const char* p = ResolveAssetRoot(GAME_DATA_ROOT "sound/audio.txt", rooted, sizeof(rooted));
     char norm[260];
     return FileExists(plat_normalize_path(p, norm, sizeof(norm)));
 }

@@ -99,6 +99,7 @@
 #include "../../DebugPrint.h"
 #include "../SpriteRenderer.h"           // TextureDraw queue + SPRITE_CLASS_*
 #include "../../marni/MarniSystem.h"     // MarniCreateTexture
+#include "../saturn/SaturnTyrant.h"      // the Saturn's second lab Tyrant
 #include <cstring>
 #include <cstdlib>
 
@@ -866,6 +867,10 @@ void tyrant_draw_heart(void)
     Entity* heart = reinterpret_cast<Entity*>(static_cast<uintptr_t>(eu(owner, 0x170)));
     if (!tyrant_pool_pointer(heart, sizeof(Entity))) return;
     if (!tyrant_pool_pointer((const void*)(uintptr_t)heart->unk_18, 0xb4)) return;
+    // Saturn: the heart is drawn through the generic entity draw (GAME4
+    // 0x06039250), which skips an entity whose status byte is 0 - that is how
+    // the dissolve puts the heart out (saturn/SaturnTyrant.cpp).
+    if (g_bSaturnMode && heart->status_flags == 0) return;
 
     update_entity_lighting(reinterpret_cast<VECTOR*>(&owner->scaMatrixData.localMatrix.t[0]));
 
@@ -1909,6 +1914,14 @@ void tyrant_run_behavior(int index)
 
 } // namespace
 
+// Saturn: the dissolving death (saturn/SaturnTyrant.cpp) steps the corpse with
+// the same root motion as the PC's own death behaviour, which lives in the
+// anonymous namespace above.
+void tyrant_root_motion_saturn(unsigned char set, char apply)
+{
+    tyrant_root_motion(set, apply);
+}
+
 // ===========================================================================
 // State 0 - 0x004212b0.  One-time setup.
 // ===========================================================================
@@ -1969,6 +1982,11 @@ static void tyrant_init(void)
     ENTITY->lookAtFlags     = 2;
     ENTITY->lookAtYawStep   = 0xa0;
     ENTITY->lookAtPitchStep = 0x60;
+
+    // Saturn (GAME4 0x060745E4 / 0x060746A2): clear the second-Tyrant bytes and
+    // mark Jill's Tyrant to die the PC way.
+    if (g_bSaturnMode) saturn_tyrant_init();
+    if (g_bSaturnMode) saturn_tyrant_battle_init();
 
     if (ENTITY->id == 12) return;
 
@@ -2088,7 +2106,12 @@ static void tyrant_state_forced(void)
     if (ENTITY->ignore_player_flag == 0) {
         set_state_word(0x00000103);          // state 3, ignore 1, behaviour 0
         if (ENTITY->id == 0x10) ENTITY->action_behavior = 1;
+        // Saturn (GAME4 0x06074C8C): the lab Tyrant takes behaviour 2, the
+        // dissolve, unless it is Jill's or already the second one.
+        else if (g_bSaturnMode) saturn_tyrant_forced_select();
     }
+    // The Saturn's table has the dissolve at [2] where the PC's has `pause`.
+    if (g_bSaturnMode && saturn_tyrant_forced_run()) return;
     tyrant_run_behavior((int)ENTITY->action_behavior);
 }
 
@@ -2459,7 +2482,7 @@ void em_scd_behavior_rocket_death(void)
     char sub = (char)ty_sub();
 
     if (sub == 0) {
-        ty_flags() |= 8;                       // stop drawing the intact body
+        ty_flags() |= 8;                      // stop drawing the intact body
         ty_sub() = 1;
         ty_frame() = 0;
         eub(ENTITY, 0xbf) = 0;
@@ -2509,10 +2532,20 @@ void em_scd_behavior_rocket_death(void)
         ENTITY->speed.x = (short)((cam[0] - ei(ENTITY, 0x34)) / 0x32);
         ENTITY->speed.y = (short)((short)cam[1] + (short)((1000 - ei(ENTITY, 0x38)) / 0x32));
         ENTITY->speed.z = (short)((cam[2] - ei(ENTITY, 0x3c)) / 0x32);
-        return;
-    }
 
-    if (sub != 1) {
+        // NO return here: the original falls straight into the sub-1 body
+        // (0x0045eb01 stores speed.z, 0x0045eb0a is sub 1's `ticks == 2` test).
+        // So the first blast frame runs in the SAME call, before any joint
+        // compose: Joint_move's blend (counter 7) still reaches the five limbs,
+        // because the freeze bit 0x10 is only set by the compose, and lerps
+        // their tumble angles 1/8 of the way to the animation (0x40 -> 0x38,
+        // 0x60 -> 0x54), and tyrant_limb_update applies its first step. The
+        // compose that follows then freezes each limb as parent * RotMatrix(
+        // blended tumble). Returning here let the compose freeze them in the
+        // animation pose with the full tumble, and every limb landed in a
+        // different orientation from the original's (checked against a memory
+        // capture of the original: all five world matrices match this path).
+    } else if (sub != 1) {
         if (sub != 2) return;
         // Smoulder, then hand the room the death.
         if (ty_ticks() > 200) {
@@ -2540,7 +2573,7 @@ void em_scd_behavior_rocket_death(void)
         return;
     }
 
-    // ---- sub 1: the blast ----
+    // ---- sub 1: the blast (also reached from sub 0, see above) ----
     if (ty_ticks() == 2) {
         Play3DSnd(2, 0x19, 0, (int)&ei(ENTITY, 0x34));
         Play3DSnd(2, 0x1a, 0, (int)&ei(ENTITY, 0x34));
@@ -2920,6 +2953,8 @@ const TyrantState s_tyrantStates[10] = {
 // ===========================================================================
 void tyrant_update(void)
 {
+    if (g_bSaturnMode) saturn_tyrant_battle_update();
+
     // Any live Tyrant whose behavior_flags carry 0x40 is handed to the SCD.
     if (ENTITY->state != 0 && (ENTITY->behavior_flags & 0x40) != 0)
         ENTITY->state = 8;
@@ -3028,6 +3063,10 @@ void tyrant_update(void)
     }
 
     update_player_position(reinterpret_cast<PlayerEntity*>(ENTITY), 2);
+
+    // Saturn (GAME4 0x06074B50): the second lab Tyrant's release, run while
+    // +0x186 bit 0x04 is armed by the dissolve.
+    if (g_bSaturnMode) saturn_tyrant_update_tail();
 }
 
 // ===========================================================================

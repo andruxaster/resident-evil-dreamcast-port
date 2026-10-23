@@ -82,6 +82,7 @@
 #include "../marni/MarniSystem.h"
 #include "../system/AssetPath.h"
 #include "SpriteRenderer.h"
+#include "HdText.h"
 
 // ============================================================================
 // PrintText8x8 (0x00455420)
@@ -122,6 +123,10 @@ void PrintText8x8(short x, short y, unsigned char color, char shadow)
 
     g_TextureDesc.clutX = 0x100;
     g_TextureDesc.clutY = clutIndex + 0x1E0;
+
+    // Port-only: with HD textures and an HD font (HdText.h) the text is drawn
+    // in it instead, in the same cells.
+    if (HdText_Print8x8(x, y, brightness)) return;
 
     for (int i = 0; PRINT_TEXT_BUFFER[i] != '\0'; i++) {
         unsigned char ch = (unsigned char)PRINT_TEXT_BUFFER[i];

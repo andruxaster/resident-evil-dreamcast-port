@@ -130,17 +130,20 @@ float MillibelsToAmplitude(int mB)
     return powf(10.0f, (float)mB / 2000.0f);
 }
 
+// MERGE140: IDirectSoundBuffer::Stop leaves the play cursor where it is, and
+// the original's PlaySound (0x0041ee60) only rewinds a buffer that is still
+// playing - so a stopped bank resumes. PauseSounds / ResumePausedSounds are
+// built on exactly that (same as the Linux backend since 1.4.0).
 void StopBank(Bank& b)
 {
     b.playing = false;
     b.status = 0;
-    b.pos = 0;
-    b.frac = 0;
 }
 
 void FreeBank(Bank& b)
 {
     StopBank(b);
+    b.pos = b.frac = 0;
     if (b.wavData != nullptr) {
         s_pcmBytes -= (size_t)b.frames * b.channels * (b.bits / 8);
         free(b.wavData);
@@ -171,6 +174,7 @@ void MixBank(Bank& b, int32_t* acc, int frames)
             } else {
                 b.playing = false;
                 b.status = 0;
+                b.pos = b.frac = 0;       // played out: the next PlaySound starts over
                 return;
             }
         }
@@ -477,8 +481,8 @@ void DirectSound::PlaySound(int bank, unsigned int slot)
     mutex_lock(&s_lock);
     Bank& b = s_banks[bank];
     if (b.active && b.pcm != nullptr && !RE1_DC_SILENT) {
-        b.pos = 0;
-        b.frac = 0;
+        // 0x0041ee60: SetCurrentPosition(0) only while the buffer is playing.
+        if (b.playing) b.pos = b.frac = 0;
         b.loop = (slot != 0);
         b.playing = true;
         b.status = 1;
@@ -598,7 +602,7 @@ void InitializeSoundSystem(void)
     g_pDirectSound = mgr;
     g_SoundManager = (void*)mgr;
 
-    s_outRate = AudioFile_TreeHasPs1Audio() ? 44100 : 22050;
+    s_outRate = AudioFile_TreeHasCDAudio() ? 44100 : 22050;   // MERGE140: renamed upstream
     if (RE1_DC_SILENT) {
         printf("[AUDIO] RE1_DC_SILENT build - no AICA stream\n");
         StartPollThread();          // the watchdog lives there

@@ -22,7 +22,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from jpn_font_table import build_map  # noqa: E402
 from jpn_font_table import LEFT, RIGHT  # noqa: E402
 
-EXE = r'C:\Users\eduar\Downloads\re1cr-2019-09-06\Biohazard.exe'
+EXE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                   'assets', 'Biohazard.exe')
 
 # global_messages[64]  (PTR_DAT_004cde58, read by set_message_display 0x00491980)
 GLOBAL_MESSAGES = 0x004CDE58

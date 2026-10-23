@@ -74,6 +74,7 @@
 #include "EntityCommon.h"
 #include "../../Globals.h"
 #include "../BioCard.h"
+#include "../saturn/SaturnTick.h"   // the Saturn's Tick: GAME2's own Hunter body
 #include <cstdlib>
 #include <cstring>
 
@@ -86,8 +87,8 @@ extern void zombie_check_special_weapon(void);                     // 0x0043d8a0
 
 // 0x004bd2b0 - shared one-shot flag, defined in Globals.cpp. The pounce grab
 // sets it to 1 (hunter_pounce_track); the death screen consumes and clears it
-// while hiding the player's head joint. Image value 0x00006C6C.
-extern int DAT_004bd2b0;                                           // 0x004bd2b0
+// while hiding the player's head joint.
+extern int g_dieScreenHideHead;                                    // 0x004bd2b0
 
 // 0x00be0de4 / 0x00be0de8 - shared entity scratch, defined in EntityCommon.cpp.
 extern int player_distance_z;                                      // 0x00be0de4
@@ -480,6 +481,9 @@ static void hunter_state_init(void) // 0x00416020
         ENTITY->ignore_player_flag = 1;
         ENTITY->action_behavior = 0xB;
     }
+
+    // Sega Saturn, stage byte 2: the Hunter is a Tick (GAME2 0x0606C824).
+    if (g_bSaturnMode && saturn_tick_active()) saturn_tick_state_init();
 }
 
 // ============================================================================
@@ -619,6 +623,10 @@ static void hunter_variant_dispatch(void) // 0x004167f0
         hunter_coward_ai();
         return;
     }
+    // Sega Saturn, Tick: a player flag of 0x55 parks it (GAME2 0x0606D074).
+    if (g_bSaturnMode && saturn_tick_active() && saturn_tick_variant_hold()) {
+        return;
+    }
     hunter_variant_table[ENTITY->behavior_flags & 0xF]();
 }
 
@@ -701,10 +709,14 @@ static void hunter_variant_0_ai(void) // 0x00416840
         int dz = PLAYER_T_INT[2] - H_POS_T[2];
         int dx = PLAYER_T_INT[0] - H_POS_T[0];
         g_playerDisplacement = (dz < 0 ? -dz : dz) + (dx < 0 ? -dx : dx);
+        // Sega Saturn, Tick (GAME2 0x0606D10C): aims within 0x20 rather than
+        // 0x100 and starts the stab instead of rolling a leap.
+        const bool tick = g_bSaturnMode && saturn_tick_active();
         if (g_playerDisplacement < 2000 &&
-            (short)turn_toward_target(PLAYER_T, 0x100) == 0 &&
+            (short)turn_toward_target(PLAYER_T, tick ? 0x20 : 0x100) == 0 &&
             H_POUNCE_LATCH != 0) {
-            hunter_roll_leap();
+            if (tick) saturn_tick_variant_0_leap();
+            else      hunter_roll_leap();
         }
     }
 }
@@ -757,6 +769,11 @@ static void hunter_variant_1_ai(void) // 0x00416c30
 // ============================================================================
 static void hunter_variant_2_ai(void) // 0x00416ca0
 {
+    // Sega Saturn, Tick: GAME2 carries its own variant 2 (0x0606D484).
+    if (g_bSaturnMode && saturn_tick_active()) {
+        saturn_tick_variant_2_ai();
+        return;
+    }
     short playerHealth = g_playerEntity.health;
 
     int dz = PLAYER_T_INT[2] - H_POS_T[2];
@@ -1021,6 +1038,11 @@ static void hunter_idle_walk(void) // 0x00417210
 // ============================================================================
 static void hunter_behavior_chase(void) // 0x00417290
 {
+    // Sega Saturn, Tick: its own walk (GAME2 0x0606D998).
+    if (g_bSaturnMode && saturn_tick_active()) {
+        saturn_tick_behavior_chase();
+        return;
+    }
     ENTITY->animationId = 0x10;
     H_SPEED_W = 0x28;
     g_animFrameIdSave = 6;
@@ -1090,6 +1112,11 @@ void (*const hunter_attack_sub_table[6])(void) = {
 // ============================================================================
 static void hunter_behavior_pounce(void) // 0x00417760
 {
+    // Sega Saturn, Tick: behaviour 5 is the stab (GAME2 0x0606DE98).
+    if (g_bSaturnMode && saturn_tick_active()) {
+        saturn_tick_behavior_pounce();
+        return;
+    }
     H_POUNCE_LATCH = 0;
     hunter_pounce_sub_table[ENTITY->action_state]();
 
@@ -1329,7 +1356,10 @@ static void hunter_pounce_track(void) // 0x00417a20
 {
     ENTITY->action_state = (unsigned char)(ENTITY->action_state +
         (char)Joint_move(0, ENTITY->animHeader, ENTITY->animBase, 0x400));
-    DAT_004bd2b0 = 1;
+    // The PS1 hides the head right here (joint 1 flags &= 0xFE, STAGE3.EXE
+    // 0x801174fc); the PC leaves it drawn and defers the hide to the death
+    // screen through this flag.
+    g_dieScreenHideHead = 1;
     hunter_track_player_joint();
 }
 
@@ -1487,6 +1517,12 @@ static void hunter_dodge_land(void) // 0x00417e40
 // ============================================================================
 static void hunter_behavior_grabhold(void) // 0x00417ee0
 {
+    // Sega Saturn, Tick: it carries the player on its arm and decapitates them
+    // (GAME2 0x0606E78C); the Hunter's hold would index a Tick animation id.
+    if (g_bSaturnMode && saturn_tick_active()) {
+        saturn_tick_behavior_grabhold();
+        return;
+    }
     switch (ENTITY->action_state) {
     case 0:
         ENTITY->action_state = 1;

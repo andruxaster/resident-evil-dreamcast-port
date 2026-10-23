@@ -88,6 +88,7 @@ jobs:
           Copy-Item "config.ini.template" "stage/$name/config.ini"
           Copy-Item "README.md" "stage/$name"
           Copy-Item "LICENSE" "stage/$name"
+          Copy-Item "THIRD_PARTY_NOTICES.txt" "stage/$name"
           Compress-Archive -Path "stage/$name/*" -DestinationPath "$name.zip"
           "zip=$name.zip" >> $env:GITHUB_OUTPUT
           "name=$name" >> $env:GITHUB_OUTPUT
@@ -182,6 +183,7 @@ jobs:
           Copy-Item "tools/asset_migrator/build/re1am_selftest.exe" $out
           Copy-Item "tools/asset_migrator/README.md" $out
           Copy-Item "LICENSE" $out
+          Copy-Item "tools/asset_migrator/THIRD_PARTY_NOTICES.txt" $out
           Compress-Archive -Path "$out/*" -DestinationPath "$name.zip"
           "zip=$name.zip" >> $env:GITHUB_OUTPUT
           "name=$name" >> $env:GITHUB_OUTPUT
@@ -197,6 +199,124 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload "${{ needs.release-please.outputs.tag_name }}" "${{ steps.stage.outputs.zip }}" --clobber
+
+  # The asset migrator for Linux: a 64-bit Qt 6 build (the tool has no 32-bit
+  # constraint, unlike the game), shipped as an AppImage so the target needs no
+  # Qt. linuxdeploy's Qt plugin copies the Qt libraries, the xcb platform plugin
+  # and its libraries into the AppDir and sets their rpaths. ffmpeg stays a
+  # runtime dependency, as on Windows.
+  #
+  # ubuntu-22.04, not the game's 24.04 reference image: an AppImage needs the
+  # target's glibc to be at least the build host's, and 22.04's 2.35 reaches
+  # more distributions than 24.04's 2.39. The aqt Qt kit is built against an
+  # older glibc still, so it does not raise that floor.
+  build-asset-migrator-linux:
+    needs: release-please
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Build the tagged commit when releasing, otherwise the pushed commit.
+          ref: ${{ needs.release-please.outputs.tag_name || github.sha }}
+
+      # The aqt Qt kit links the system GL/xkbcommon/fontconfig, and
+      # linuxdeploy-plugin-qt resolves every library the xcb platform plugin
+      # needs, so they all have to be present on the build host.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build libgl1-mesa-dev libegl1 libfontconfig1 libfreetype6 \
+            libxkbcommon-dev libxkbcommon-x11-0 libdbus-1-3 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+            libxcb-xkb1 libxcb-xfixes0 libxcb-sync1 libxcb-shm0 \
+            imagemagick
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: linux
+          arch: linux_gcc_64
+          cache: true
+
+      - name: Configure
+        run: >
+          cmake -S tools/asset_migrator -B tools/asset_migrator/build
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
+
+      - name: Build
+        run: cmake --build tools/asset_migrator/build
+
+      # The core verifier is Qt-free; running it here is the cheap check that
+      # the GCC build of the decoders agrees with the MSVC one.
+      - name: Core self-test
+        run: tools/asset_migrator/build/re1am_selftest selftest
+
+      - name: Build AppImage and stage release files
+        id: stage
+        run: |
+          version="${{ needs.release-please.outputs.version }}"
+          [ -n "$version" ] || version="${GITHUB_SHA:0:7}"
+          name="asset-migrator-$version-linux-x86_64"
+          tools="$RUNNER_TEMP/linuxdeploy"
+          mkdir -p "$tools"
+          base=https://github.com/linuxdeploy
+          curl -fsSL -o "$tools/linuxdeploy" \
+            "$base/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+          curl -fsSL -o "$tools/linuxdeploy-plugin-qt" \
+            "$base/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage"
+          chmod +x "$tools"/*
+          # The runner has no FUSE: unpack the tools instead of mounting them.
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          # The tool has no desktop entry or icon of its own; an AppImage
+          # requires both, so they are made here.
+          work="$RUNNER_TEMP/appimage"
+          mkdir -p "$work"
+          cat > "$work/re1_asset_migrator.desktop" <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=RE1 Asset Migrator
+          Exec=re1_asset_migrator
+          Icon=re1_asset_migrator
+          Categories=Utility;
+          Terminal=false
+          EOF
+          # A plain swatch: text would need a font ImageMagick may not find.
+          convert -size 256x256 xc:'#6b0f0f' "$work/re1_asset_migrator.png"
+          export QMAKE="$QT_ROOT_DIR/bin/qmake"
+          export LD_LIBRARY_PATH="$QT_ROOT_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export OUTPUT="re1_asset_migrator-x86_64.AppImage"
+          "$tools/linuxdeploy" --appdir "$work/AppDir" \
+            --executable tools/asset_migrator/build/re1_asset_migrator \
+            --desktop-file "$work/re1_asset_migrator.desktop" \
+            --icon-file "$work/re1_asset_migrator.png" \
+            --plugin qt --output appimage
+          out="stage/$name"
+          mkdir -p "$out"
+          mv "$OUTPUT" "$out/"
+          # The headless core verifier the README documents; it needs no Qt.
+          cp tools/asset_migrator/build/re1am_selftest "$out/"
+          cp tools/asset_migrator/README.md LICENSE \
+            tools/asset_migrator/THIRD_PARTY_NOTICES.txt "$out/"
+          tar -C stage -czf "$name.tar.gz" "$name"
+          echo "archive=$name.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.stage.outputs.name }}
+          path: ${{ steps.stage.outputs.archive }}
+
+      - name: Attach build to release
+        if: needs.release-please.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ needs.release-please.outputs.tag_name }}" "${{ steps.stage.outputs.archive }}" --clobber
 
   # Linux x86-32. Shares every game translation unit with Windows; the SDL2 +
   # OpenGL platform layer stands in for the MarniDX/Win32 backend. The runner is
@@ -249,6 +369,7 @@ jobs:
           # package_linux.sh writes no config.ini: ship the template as the
           # initial settings file, same as the Windows package.
           cp config.ini.template "$bundle/config.ini"
+          cp THIRD_PARTY_NOTICES.txt "$bundle/"
           name="$(basename "$bundle")"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           echo "archive=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"

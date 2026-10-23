@@ -25,6 +25,7 @@
 
 #include "../../Globals.h"
 #include "../../DebugPrint.h"
+#include "../saturn/SaturnBattle.h"
 
 #include <cstddef>
 
@@ -32,7 +33,7 @@
 // dc_apply_mode_flags() in GameStart.cpp (PS1 g_status_flags 0x20000).
 static int dc_is_advanced(void)
 {
-    return (g_main_state_flags2 & MSF2_DC_ADVANCED) != 0;
+    return (g_main_state_flags2 & MSF2_DC_ADVANCED) != 0 || saturn_battle_dc_outfit();
 }
 
 unsigned char dc_emd_advanced_index(unsigned char modelIndex)

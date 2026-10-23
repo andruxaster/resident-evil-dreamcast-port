@@ -20,6 +20,13 @@ std::vector<uint8_t> makeBackgroundTim(const std::vector<uint8_t>& rgb);
 // 0x102 resets the dictionary, 0x100 ends the stream.
 std::vector<uint8_t> lzwPack(const std::vector<uint8_t>& data);
 
+// The game's own decoder for the same format, so a pak this tool wrote can be
+// read back and checked. 0x100 ends the stream, 0x102 restarts the dictionary,
+// 0x101 raises the code width; a code that is not in the dictionary yet (the
+// KwKwK case) is the previous string plus its own first character.
+bool lzwUnpack(const uint8_t* src, size_t n, std::vector<uint8_t>* out,
+               std::string* error);
+
 // "RC<stage><room:02X><cam>.pak".
 std::string pakName(char stageDigit, int roomId, int cam);
 

@@ -64,18 +64,8 @@ void OnFatalSignal(int sig)
 
 void crashlog_install(void)
 {
-    const int fd = OpenLog();
-    if (fd >= 0) {
-        char buf[64];
-        int n = snprintf(buf, sizeof(buf), "\n---- session start (pid %d) ----\n",
-                         (int)getpid());
-        if (n > 0) {
-            ssize_t ignored = write(fd, buf, (size_t)n);
-            (void)ignored;
-        }
-        close(fd);
-    }
-
+    // Nothing is written here: crash.log is only touched when something
+    // actually dies, so a clean run leaves no log behind.
     signal(SIGSEGV, OnFatalSignal);
     signal(SIGABRT, OnFatalSignal);
     signal(SIGBUS,  OnFatalSignal);

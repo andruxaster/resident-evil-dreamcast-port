@@ -257,3 +257,8 @@ void MarniDX_DestroyGlobal()
 {
     if (g_pDX != nullptr) { g_pDX->Destroy(); delete g_pDX; g_pDX = nullptr; }
 }
+
+// MERGE140: methods added in upstream 1.4.0
+BOOL MarniDX::ReplaceTexture(MarniHandle, int, int, const void*) { return FALSE; }
+unsigned int MarniDX::TextureSerial(MarniHandle) const { return 0; }
+void MarniDX::SetAspectLock(BOOL) {}

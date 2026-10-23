@@ -29,6 +29,16 @@
 // record and stands the player just past that door's action zone, with a
 // collision point query to reject spots that are inside a wall.
 //
+// Battle Game: while a run is in progress the stage list grows a STAGE8 entry
+// whose rooms are the 15 arenas, so the menu moves between arenas mid-run.
+// That jump does NOT go through the synthetic record: the room byte is the
+// arena number, so the destination, the door animation, the door sound and the
+// arrival point are the run's own (saturn_battle_debug_warp, saturn/
+// SaturnBattle.cpp) - an arena's RDT is a copy of a campaign room and its own
+// door records have nothing to do with where a Battle Game arena puts you.
+// Picking a campaign stage instead ends the run, because battle mode reads any
+// room numbered 1..15 as an arena.
+//
 // Menu layout (8x8 font, one 8px cell per character):
 //
 //      - DEBUG MENU -                    - ROOM CHANGE -
@@ -45,6 +55,7 @@
 #include "../marni/MarniSystem.h"
 #include "SpriteRenderer.h"
 #include "FileLoader.h"
+#include "saturn/SaturnBattle.h"
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -126,14 +137,46 @@ struct DebugStageRooms {
     int                count;
 };
 
-// Only the seven base stages are listed. The Director's Cut's arrange stages
-// (ids 7-13, STAGE8-E) are not a destination of their own: they hold the same
-// physical rooms as the base stage seven ids below, and ADVANCED mode already
-// redirects a base stage/room load to its arrange file (room_file_stage, in
-// dc/ArrangeStages.cpp), so picking the base room is how you reach it.
-#define DBG_STAGE_COUNT   7
+// STAGE8 - the Sega Saturn Battle Game's arenas (stage 7, 0-indexed). Listed
+// ONLY while a Battle run is in progress, so it is the one destination the
+// debug menu adds for that mode: the arena list, where UP/DOWN picks the arena.
+// The room byte IS the arena number (arena 1 is ROOM8010 .. arena 15 ROOM80F0),
+// so the table is 16 long and index 0 - ROOM8000, which no arena uses - is the
+// skipped entry DebugRoomSelectable rejects. Each label carries the campaign
+// room the arena's cameras, background and sound banks are a copy of
+// (kArenaCampaignRoom, saturn/SaturnBattle.cpp), in the same hex form the room
+// line above it uses.
+static const char* const s_dbgRoomsSaturnBattle[16] = {
+    "(NOT AN ARENA)",
+    "ARENA 01  ROOM 100",      // rest room
+    "ARENA 02  ROOM 103",
+    "ARENA 03  ROOM 302",
+    "ARENA 04  ROOM 117",
+    "ARENA 05  ROOM 210",
+    "ARENA 06  ROOM 100",      // rest room
+    "ARENA 07  ROOM 404",
+    "ARENA 08  ROOM 40C",
+    "ARENA 09  ROOM 309",
+    "ARENA 10  ROOM 30C",
+    "ARENA 11  ROOM 30E",      // rest room
+    "ARENA 12  ROOM 509",
+    "ARENA 13  ROOM 50F",
+    "ARENA 14  ROOM 510",
+    "ARENA 15  ROOM 513",      // the Tyrant
+};
 
-static const DebugStageRooms s_dbgStageRooms[DBG_STAGE_COUNT] = {
+// Only the seven base campaign stages are listed by default. The Director's
+// Cut's arrange stages (ids 7-13, STAGE8-E) are not a destination of their
+// own: they hold the same physical rooms as the base stage seven ids below, and
+// ADVANCED mode already redirects a base stage/room load to its arrange file
+// (room_file_stage, in dc/ArrangeStages.cpp), so picking the base room is how
+// you reach it. STAGE8 (id 7) is the same id those stages start at, which is
+// why it only appears during a Battle run - and why the arena jump goes
+// through the run's own tables instead of a synthetic door record.
+#define DBG_STAGE_COUNT   7
+#define DBG_STAGE_TOTAL   8       // plus STAGE8, listed only in a Battle run
+
+static const DebugStageRooms s_dbgStageRooms[DBG_STAGE_TOTAL] = {
     { s_dbgRoomsMansion1F, 29 },    // stage 0 - mansion 1F
     { s_dbgRoomsMansion2F, 29 },    // stage 1 - mansion 2F
     { s_dbgRoomsCourtyard, 18 },    // stage 2 - courtyard / underground
@@ -141,12 +184,22 @@ static const DebugStageRooms s_dbgStageRooms[DBG_STAGE_COUNT] = {
     { s_dbgRoomsLaboratory, 22 },   // stage 4 - laboratory
     { s_dbgRoomsMansion1F, 29 },    // stage 5 - mansion return 1F
     { s_dbgRoomsMansion2F, 29 },    // stage 6 - mansion return 2F
+    { s_dbgRoomsSaturnBattle, 16 }, // stage 7 - STAGE8, the Battle arenas
 };
 
-// Highest stage the room-change menu will scroll to.
+// A Battle run in progress - the only state in which the arena list may be
+// used, and the only state in which g_stageId is SATURN_BATTLE_STAGE_ID.
+static int DebugBattleRunActive(void)
+{
+    return g_bSaturnMode && g_saturnBattleActive != 0;
+}
+
+// Highest stage the room-change menu will scroll to. A Battle run adds STAGE8,
+// so the debug menu can move between arenas mid-run; outside one it is the
+// seven base stages, exactly as before.
 static int DebugStageMax(void)
 {
-    return DBG_STAGE_COUNT - 1;
+    return DebugBattleRunActive() ? SATURN_BATTLE_STAGE_ID : DBG_STAGE_COUNT - 1;
 }
 
 // Menu entries, mirroring the PS1 debug menu. "ROOM CHANGE" replaces its
@@ -183,7 +236,6 @@ static int           s_dbgFlagBit = 0;          // flag editor: selected bit, AB
 static int           s_dbgPrevKeys = 0;         // edge-detect sample of the previous frame
 static int           s_dbgPrevF1 = 0;           // edge-detect sample of F1 across open/close
 static int           s_dbgRoomChangeArmed = 0;  // set on confirm, consumed by the game_loop hook
-static int           s_dbgRestoreVariant = 0;   // SCENARIO_FLAG_STAGE_VARIANT was cleared for the transition
 static unsigned char s_dbgDoorRecord[0x18];     // synthetic door record (must outlive the transition)
 
 // Input bit masks for s_dbg*Keys sampling
@@ -355,6 +407,13 @@ static int DebugRoomSelectable(int stage, int room)
         }
     }
 
+    // STAGE8 in a Battle run: the room byte is the arena number and the arenas
+    // are rooms 1..15, so ROOM8000 is not one of them and is stepped off like
+    // the mansion's missing RDTs are. (Outside a run this stage is not listed.)
+    if (stage == SATURN_BATTLE_STAGE_ID && room == 0) {
+        return 0;
+    }
+
     return 1;
 }
 
@@ -389,6 +448,31 @@ static void DebugRoomChange_Trigger(void)
         return;
     }
 
+    // An arena of a Battle run. This is not a generic room change: the run owns
+    // the destination (the room byte is the arena number), the door animation and
+    // sound come from its virtual door record and the arrival point from its
+    // spawn table, so the jump is handed to the run's own warp
+    // (saturn_battle_debug_warp) instead of the synthetic record below. That
+    // also means the post-load placement hook must stay disarmed: the player is
+    // already where the arena's spawn record puts them.
+    if (DebugBattleRunActive() && stage == SATURN_BATTLE_STAGE_ID) {
+        s_dbgRoomChangeArmed = 0;
+        dbg_printf("[debugmenu] room change: battle arena %d (ROOM 80%X0)\n",
+                   s_dbgRoom, s_dbgRoom);
+        saturn_battle_debug_warp(s_dbgRoom);
+        return;
+    }
+
+    // Leaving the arenas for a campaign room ends the run first. Battle mode is
+    // keyed on the room byte alone - saturn_battle_arena_index() reads any room
+    // 1..15 as an arena - so a campaign room that happens to be numbered in that
+    // range would be loaded as one of the arenas: the wrong background, the
+    // arena music and a per-frame machine re-arming itself on the way out.
+    if (DebugBattleRunActive()) {
+        dbg_printf("[debugmenu] room change: leaving the battle run for stage %d\n", stage);
+        saturn_battle_end_run();
+    }
+
     memset(s_dbgDoorRecord, 0, sizeof(s_dbgDoorRecord));
 
     // record+0x0D destination, room_transition_load's encoding: < 0x20 is a
@@ -403,14 +487,20 @@ static void DebugRoomChange_Trigger(void)
     s_dbgDoorRecord[0x0B] = 0;      // entry camera 0; no camera-only (0x80) / silent (0x40) flags
     s_dbgDoorRecord[0x16] = 0xFF;   // no key item
 
-    // room_transition_load adds 5 to stages 0/1 when
-    // SCENARIO_FLAG_STAGE_VARIANT is set (the return-mansion remap). Clear it
-    // for the transition and restore it once the destination room is loaded
-    // so the menu can reach the exact stage it displays.
-    s_dbgRestoreVariant = 0;
-    if (stage < 2 && Flg_ck((int)g_ScenarioFlags, SCENARIO_FLAG_STAGE_VARIANT) != 0) {
+    // SCENARIO_FLAG_STAGE_VARIANT is the game's "back from the guardhouse"
+    // bit (ROOM40C's script sets it once Plant 42 is dead). It is what
+    // room_transition_load reads to add 5 to stages 0/1 (the return-mansion
+    // remap), and what the mansion rooms' own init scripts test to choose
+    // their enemies: ROOM207/707 spawn zombies (id 0x11) with it clear and
+    // Hunters (id 6) with it set. The stage only picks the files, so a
+    // return-mansion room entered with the bit clear had zombies on the
+    // Hunters' sound bank. Make the bit follow the mansion stage chosen
+    // here, and leave it that way, so the room and the doors out of it
+    // agree; the other stages do not depend on it and keep the save's.
+    if (stage == STAGE_MANSION_1F || stage == STAGE_MANSION_2F) {
         FUN_00473f10((int*)g_ScenarioFlags, SCENARIO_FLAG_STAGE_VARIANT);
-        s_dbgRestoreVariant = 1;
+    } else if (stage == STAGE_MANSION_RETURN_1F || stage == STAGE_MANSION_RETURN_2F) {
+        Flg_on((int)g_ScenarioFlags, SCENARIO_FLAG_STAGE_VARIANT);
     }
 
     s_dbgRoomChangeArmed = 1;
@@ -546,12 +636,6 @@ void DebugRoomChange_ApplyPendingPlacement(void)
         return;
     }
     s_dbgRoomChangeArmed = 0;
-
-    // Restore the stage-variant bit cleared by DebugRoomChange_Trigger.
-    if (s_dbgRestoreVariant != 0) {
-        Flg_on((int)g_ScenarioFlags, SCENARIO_FLAG_STAGE_VARIANT);
-        s_dbgRestoreVariant = 0;
-    }
 
     unsigned char* table = g_RoomActionTable;
     unsigned char* tail  = (unsigned char*)g_RoomActionTail;
@@ -1202,8 +1286,11 @@ struct DebugQuickSlotInfo {
     int roomId;         // file 0x201
     int savesCount;     // file 0x228
     int dcGameMode;     // file 0x233 (g_DcGameMode); port-only, see below
+    unsigned int timestamp;   // when the save was written (SaveFileTimestamp)
 };
-static DebugQuickSlotInfo s_dbgQuickSlotInfo[8];
+static DebugQuickSlotInfo s_dbgQuickSlotInfo[SAVE_SLOT_TOTAL];
+static int           s_dbgQuickTop = 0;         // slot lists: first slot shown
+#define DBG_QUICK_ROWS 8
 
 // mirror of SaveLoadScreen.cpp's SaveSlotLoadBlocked. In OG mode a
 // DC TRAINING/ADVANCED/ADVANCED* save cannot be loaded (its rules exist only in
@@ -1211,7 +1298,17 @@ static DebugQuickSlotInfo s_dbgQuickSlotInfo[8];
 // allowed through the save list.
 static int DebugQuickSlotLoadBlocked(const DebugQuickSlotInfo* info)
 {
-    if (g_bDcMode || !info->hasData) {
+    if (!info->hasData) {
+        return 0;
+    }
+    const int saturnSave = (info->dcGameMode & SAVE_MODE_SATURN_FLAG) != 0;
+    if (g_bSaturnMode && !saturn_mode_is_borrowed()) {
+        return !saturnSave;
+    }
+    if (saturnSave) {
+        return 1;
+    }
+    if (g_bDcMode) {
         return 0;
     }
     return (info->dcGameMode & 3) != DC_DIFFICULTY_STANDARD;
@@ -1219,8 +1316,8 @@ static int DebugQuickSlotLoadBlocked(const DebugQuickSlotInfo* info)
 
 static void DebugQuick_ScanSlots(void)
 {
-    char buffer[0xA90];                 // full save file (0xA82) + margin
-    for (int i = 0; i < 8; i++) {
+    char buffer[0xA90];                 // full save file (0xA86) + margin
+    for (int i = 0; i < SAVE_SLOT_TOTAL; i++) {
         DebugQuickSlotInfo* info = &s_dbgQuickSlotInfo[i];
         info->hasData = 0;
         sprintf(g_saveFileName, "%ssavedat%d.dat", GetSaveRoot(), i + 1);
@@ -1232,6 +1329,7 @@ static void DebugQuick_ScanSlots(void)
             info->roomId      = (unsigned char)buffer[0x201];
             info->savesCount  = (unsigned char)buffer[0x228];
             info->dcGameMode  = (unsigned char)buffer[0x233];
+            info->timestamp   = SaveFileTimestamp(g_saveFileName, buffer, size);
         }
     }
 }
@@ -1240,11 +1338,17 @@ static void DebugQuick_DrawSlotList(void)
 {
     DebugMenu_DrawBox();
 
-    DebugMenu_PrintCentered(76, (s_dbgQuickMode == 0) ? "- QUICK SAVE -" : "- QUICK LOAD -",
-                            DBGCOL_TEXT);
+    char title[40];
+    sprintf(title, "%s %02d/%02d", (s_dbgQuickMode == 0) ? "- QUICK SAVE -" : "- QUICK LOAD -",
+            s_dbgQuickSlot + 1, SAVE_SLOT_TOTAL);
+    DebugMenu_PrintCentered(76, title, DBGCOL_TEXT);
 
-    short y = 92;
-    for (int i = 0; i < 8; i++, y += 11) {
+    // Scroll the window so the selected slot stays in view.
+    if (s_dbgQuickSlot < s_dbgQuickTop) s_dbgQuickTop = s_dbgQuickSlot;
+    if (s_dbgQuickSlot > s_dbgQuickTop + DBG_QUICK_ROWS - 1) s_dbgQuickTop = s_dbgQuickSlot - (DBG_QUICK_ROWS - 1);
+
+    short y = 90;
+    for (int i = s_dbgQuickTop; i < s_dbgQuickTop + DBG_QUICK_ROWS; i++, y += 10) {
         char line[40];
         unsigned char color = DBGCOL_TEXT;
         if (s_dbgQuickSlotInfo[i].hasData) {
@@ -1252,16 +1356,15 @@ static void DebugQuick_DrawSlotList(void)
             const char* chName = ((s_dbgQuickSlotInfo[i].characterId & 3) == CHAR_JILL)
                                      ? "JILL" : "CHRIS";
             // Room id in the room change screen's hex form: (stage+1)*0x100+room
-            sprintf(line, "%d %-5s ROOM %X", i + 1, chName,
+            sprintf(line, "%2d %-5s ROOM %X", i + 1, chName,
                     (s_dbgQuickSlotInfo[i].stageId + 1) * 0x100 + s_dbgQuickSlotInfo[i].roomId);
             // a DC TRAINING/ADVANCED save is dimmed, and in OG mode
             // its load is refused (overwriting it from the save list is fine).
             if (DebugQuickSlotLoadBlocked(&s_dbgQuickSlotInfo[i])) {
                 color = DBGCOL_DIM;
-                strcat(line, " [DC]");
             }
         } else {
-            sprintf(line, "%d EMPTY", i + 1);
+            sprintf(line, "%2d EMPTY", i + 1);
             color = DBGCOL_DIM;
         }
 
@@ -1271,6 +1374,22 @@ static void DebugQuick_DrawSlotList(void)
         }
         sprintf(PRINT_TEXT_BUFFER, "%s", line);
         PrintText8x8((short)(64 + 16), y, color, 0);
+    }
+
+    // Mode and date of the selected save, as on the save screen.
+    if (s_dbgQuickSlotInfo[s_dbgQuickSlot].hasData) {
+        char info[64];
+        SaveModeTimeText((unsigned int)s_dbgQuickSlotInfo[s_dbgQuickSlot].dcGameMode,
+                         s_dbgQuickSlotInfo[s_dbgQuickSlot].timestamp, info, sizeof(info));
+        // "DC/Advanced Mode - <date>" is 35 cells and overflows the 34-cell box:
+        // drop the word "Mode" here.
+        char* word = strstr(info, " Mode");
+        if (word != NULL) {
+            memmove(word, word + 5, strlen(word + 5) + 1);
+        }
+        DebugMenu_PrintCentered(173, info,
+                                DebugQuickSlotLoadBlocked(&s_dbgQuickSlotInfo[s_dbgQuickSlot])
+                                    ? DBGCOL_DIM : DBGCOL_TEXT);
     }
 
     if (s_dbgQuickMode == 0) {
@@ -1678,10 +1797,10 @@ int debug_menu_overlay(void)
         s_dbgQuickMode = s_dbgContext - 5;
 
         if (newKeys & DBGKEY_UP) {
-            s_dbgQuickSlot = (s_dbgQuickSlot + 7) % 8;
+            s_dbgQuickSlot = (s_dbgQuickSlot + SAVE_SLOT_TOTAL - 1) % SAVE_SLOT_TOTAL;
         }
         if (newKeys & DBGKEY_DOWN) {
-            s_dbgQuickSlot = (s_dbgQuickSlot + 1) % 8;
+            s_dbgQuickSlot = (s_dbgQuickSlot + 1) % SAVE_SLOT_TOTAL;
         }
 
         if (newKeys & DBGKEY_CONFIRM) {

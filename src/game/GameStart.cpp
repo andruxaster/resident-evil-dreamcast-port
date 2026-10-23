@@ -4,12 +4,17 @@
 #include "../Globals.h"
 #include "dc/ItemTables.h"
 #include "dc/Items.h"
+#include "saturn/SaturnBattle.h"
+#include "Bonus.h"
 #include "../marni/MarniSystem.h"
 #include "FileLoader.h"
 #include "SpriteRenderer.h"
 #include <cstdio>
 #include <cstring>
 #include "../system/AssetPath.h"
+#include "../system/HdTextures.h"   // HD item icons (port-only)
+
+extern void LoadImage_SetHdIconKey(const char* key);   // TextureLoader.cpp (port)
 
 extern void setSomeColor(int r, int g, int b);              // 0x00470a50
 extern void empty_40ae40(int);                              // 0x0040ae40 RoomInit.cpp
@@ -405,6 +410,9 @@ void InitializeGame(void)
     // 0x00412380: empty in the original - call dropped
 
     ResetGameStateBlock();
+    // Port addition (0x004bd2b0 is outside the wipe range): a hunter grab cut
+    // short by a return to the title must not behead the next game's corpse.
+    g_dieScreenHideHead = 0;
 
     g_loadDataDestPointer = g_DataBuffer;
     g_SpecialRoomLightDelta = 0;
@@ -441,6 +449,9 @@ void InitializeGame(void)
 
         if ((g_main_state_flags2 & MSF2_ATTRACT_DEMO) == 0) {
             InitPlayerData();
+            // Port: the bonus weapons switched on in OPTIONS > BONUS go into
+            // the item box (Bonus.h); the start inventory stays as built.
+            bonus_grant_start_weapons();
             /*
             * chris: 140hp
             * jill: 96hp
@@ -510,15 +521,34 @@ void InitializeGame(void)
     // the same (Jill needs ink ribbons, the main-hall ribbon stays, enemies hit
     // harder). Not set for attract demos - those replay recorded input against
     // the mode bits dc_apply_mode_flags() pins to STANDARD.
-    if (g_bDcMode && (g_main_state_flags2 & MSF2_ATTRACT_DEMO) == 0) {
+    //
+    // Western difficulty (Globals.h) raises the same flag: the PS1 USA and Saturn
+    // USA stage code has no scenario-flag test at all (no Flg_ck call in any USA
+    // STAGEn.EXE overlay), so every enemy runs the PC's second-playthrough
+    // branch, and the Saturn campaign / Battle Game, the DC's STANDARD and
+    // ADVANCED, and a PC game with [Game] WesternDifficulty=1 all take it from
+    // the first frame. Set after BOTH the new-game and continue branches, so a
+    // save made on the other rules still plays on this session's.
+    if ((g_bDcMode || western_difficulty()) && (g_main_state_flags2 & MSF2_ATTRACT_DEMO) == 0) {
         Flg_on((int)g_ScenarioFlags, SCENARIO_FLAG_SECOND_PLAYTHROUGH);
     }
 
     // Director's Cut item tables (lookup + combine); no-op for DcMode=0.
     dc_apply_item_tables();
 
+    // Sega Saturn: re-raise the Battle Game unlock, then - if a run was started
+    // from the title's third item - the run's own loadout and spawn point. Both
+    // have to follow the bio_card memcpy above (which is what clears the unlock
+    // byte and rebuilds the inventory) and precede LoadHeldItemsImages() below.
+    saturn_battle_preserve();
+    saturn_battle_begin_run();
+
     // Director's Cut zombie dispatch entry (behaviour 11); no-op for DcMode=0.
     dc_apply_zombie_tables();
+
+    // Sega Saturn: zombie behaviour 9 (the Battle Game's Zombie Wesker) chases;
+    // the PC leaves that slot NULL. Written both ways.
+    saturn_apply_zombie_tables();
 
     g_deadMoveValue = (DWORD)&g_identityMatrixData;
     g_RoomCameraDataCopy = (DWORD)&g_RoomCameraData;
@@ -567,10 +597,15 @@ void InitializeGame(void)
 
     Task_sleep(1);
 
-    SetupCharacterData();
+    {
+        // Port-only: the player's skin and the weapon effect pages decode
+        // behind the load instead of stalling it (HdTextures.h).
+        HdDeferScope hdDefer;
+        SetupCharacterData();
 
-    g_loadDataDestPointer = g_shootDirEspBuffer;
-    load_shoot_direction_data();
+        g_loadDataDestPointer = g_shootDirEspBuffer;
+        load_shoot_direction_data();
+    }
 
     g_SndFadeType = 0;
     g_loadDataDestPointer = g_DataBuffer;
@@ -588,7 +623,9 @@ void InitializeGame(void)
     g_AttractModeIdleTimer = 1;
     update_room_bgm();
 
-    if ((g_playerEntity.id & 3) == CHAR_JILL) {
+    // Port: the first-run Jill (no main-hall ribbon) is the PC's alone - see
+    // jill_needs_ink_ribbons (Globals.h).
+    if ((g_playerEntity.id & 3) == CHAR_JILL && !jill_needs_ink_ribbons()) {
         // Second playthrough marker (0x7B, set by EndingScreen after clearing).
         // On a FIRST Jill playthrough, arm the first-run-only room item flag
         int is_second_playthrough = Flg_ck((int)g_ScenarioFlags, SCENARIO_FLAG_SECOND_PLAYTHROUGH);
@@ -623,7 +660,22 @@ void game_start(void)
 
     end_game_status = game_loop();
 
+    // A Battle Game run is over, whatever ended it. Clear it here, before any
+    // of the exits below, because the arena redirect in load_room_bg and
+    // Room_LoadEnemySoundBanks is keyed on the flag alone: leaving it set would
+    // make the NEXT campaign game load arena 1's background. The Saturn gets
+    // this for free - the flag is a bit in a module that is unloaded with the
+    // run. What the ranking needs is taken first.
+    const int battleRanking = saturn_battle_close_run();
+
     g_main_state_flags = 0;
+
+    // Sega Saturn: a Battle Game run - finished or dead - leaves GAME5 for
+    // RANKING, never for the title or the ending (GAME5 0x0602BD28).
+    if (battleRanking) {
+        g_main_state_flags2 = g_main_state_flags2 & MSF2_RESET_KEEP_MASK;
+        Task_chain((void*)saturn_ranking_state);
+    }
 
     if (end_game_status == 1) {
         g_main_state_flags2 = g_main_state_flags2 & MSF2_RESET_KEEP_MASK;
@@ -649,7 +701,17 @@ void game_start(void)
 // Loads a 20x30 16-bit item image from the buffer into a texture page slot.
 void LoadItemImage(int item_id, int image_index, int img_buffer) // 0x00443000
 {
+    // Port-only: name the icon after the file in the buffer and the item, so
+    // an HD picture of it can stand in (TextureLoader.cpp, HD item icons).
+    char hdKey[180];
+    if (HdTextures_Active() && HdTextures_KeyForBuffer((const void*)img_buffer, hdKey, sizeof(hdKey))[0] != '\0' &&
+        strchr(hdKey, '@') == NULL) {
+        char key[200];
+        snprintf(key, sizeof(key), "%s/%02d", hdKey, item_id);
+        LoadImage_SetHdIconKey(key);
+    }
     LoadImage(item_id * 1200 + img_buffer, 0, image_index + 1, 1, 108, (short)image_index << 5, 20, 30, 2);
+    LoadImage_SetHdIconKey(NULL);
 }
 
 // (0x00481750) - Load attract mode (demo) player save data

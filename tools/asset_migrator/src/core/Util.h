@@ -1,6 +1,7 @@
 #pragma once
 // Small filesystem/string helpers shared by the core. Kept Qt-free.
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -55,5 +56,6 @@ inline bool writeFile(const std::string& path, const std::vector<uint8_t>& d) {
 
 // Read a little-endian unsigned 32-bit value at `off` (0 when out of range).
 uint32_t readU32(const uint8_t* data, size_t size, size_t off);
+uint16_t readU16(const uint8_t* data, size_t size, size_t off);
 
 }  // namespace re1

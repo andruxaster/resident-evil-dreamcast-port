@@ -110,6 +110,15 @@ int          GetAssetVersion(void);
 void         SetAssetMode(const char* mode);
 // The active overlay's folder name, "" when none (OG).
 const char*  GetAssetModeName(void);
+// 1 when "<base>/<mode>/<relPath>" exists, whatever overlay is active. Lets a
+// mode borrow another mode's content (the Battle Game in OG/DC) only after
+// checking that mode's folder was actually imported.
+int          AssetOverlayHasFile(const char* mode, const char* relPath);
+// 1 when "<base>/<USA|JPN>/<relPath>" exists. `jpn` < 0 asks about the tree
+// that is active now, 0 about the USA tree and 1 about the JPN one - the
+// title-screen options menu uses the last two to tell whether a region can be
+// selected at all. The path is case-resolved like every other asset path.
+int          AssetBaseHasFile(int jpn, const char* relPath);
 
 // Rewrites whichever known asset-root form a path was compiled with (debug
 // ".\assets\USA\" or retail ".\usa\") to the current runtime root, writing the
@@ -118,6 +127,41 @@ const char*  GetAssetModeName(void);
 // rewrite is idempotent: the configured root never equals a recognized form, so
 // running the resolved path through again is a no-op.
 const char*  ResolveAssetRoot(const char* path, char* out, size_t outSize);
+
+// Port-only: lets a file with another extension stand in for an asset - a room
+// background stored as "rc1000.webp" where the game names "rc1000.pak". `path`
+// is the asset-rooted path the game built and `altExt` the extension to try
+// (with its dot). The search order is overlay alternate, overlay original, base
+// alternate, base original, so a mode's own file always outranks the base
+// tree's whatever its format. Returns 1 with the alternate's path in `out`
+// (not normalized, like ResolveAssetRoot's result) when the alternate is the
+// file to use, 0 when the original is - which the caller then loads as before.
+// Unlike ResolveAssetRoot a miss is silent: no overlay ships alternates as a
+// rule, so there is nothing to report.
+int          ResolveAssetAlternate(const char* path, const char* altExt,
+                                   char* out, size_t outSize);
+
+// Path of `relPath` inside a folder that sits BESIDE the USA/JPN trees, where
+// the mode overlays are ("<base>/<folder>/<relPath>", and with no [Assets]
+// Path the same shape as the base root). Not normalized. Used for content that
+// belongs to no release, such as the HD/ texture folder. NULL when it does not
+// fit.
+const char*  AssetSiblingPath(const char* folder, const char* relPath,
+                              char* out, size_t outSize);
+
+// Port-only: names an asset by the tree it is read from, for content that is
+// looked up per source file (the HD model textures, system/HdTextures.h).
+// `path` is the asset-rooted path the game built; the result is
+// "<TREE>/<tail without extension>" with '/' separators, where TREE is the
+// folder ResolveAssetRoot would read it from right now - the active overlay
+// (DC, SATURN, SATURN_JPN ...) when it carries the file, else USA or JPN.
+// So call it with the same overlay set as the load. Returns `out`, or NULL
+// when `path` is not asset-rooted or the name does not fit.
+const char*  AssetSourceKey(const char* path, char* out, size_t outSize);
+// The same for an asset that may also stand as `altExt` (a room background's
+// ".webp"): the overlay is the source when it carries either file.
+const char*  AssetSourceKeyAlt(const char* path, const char* altExt,
+                               char* out, size_t outSize);
 
 #ifdef __cplusplus
 }

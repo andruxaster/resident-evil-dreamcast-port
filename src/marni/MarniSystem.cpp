@@ -19,9 +19,14 @@
 #include "MarniXInput.h"
 #include "Globals.h"
 #include "../game/TmdRenderer.h"
+#include "../system/HdTextures.h"
 #include <cstdio>
 #include <cstring>
 #include <new>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
 
 // Verify the struct size is exactly what the original binary expects.
 // operator_new(0x21DC) in InitializeMarniSystem must match sizeof.
@@ -288,6 +293,259 @@ static int VTable_HandleWindowMessage(void* self, HWND hwnd, UINT msg,
 //
 // So the knock-out becomes a SECOND TEXTURE rather than a second page. For a
 // material whose palette marks some - but not most - of its used texels STP,
+// ---------------------------------------------------------------------------
+// Deferred HD pictures (port-only, HdTextures.h "Deferred uploads")
+//
+// While a room loads, a texture whose HD picture is still being decoded is
+// uploaded as the original and remembered here with what turns the decoded
+// picture into the final one (the whole picture, an Effspr band cut out of it,
+// a recoloured effect page). MarniHd_PumpDeferred swaps each in under the same
+// handle once it is decoded - the door animation and the load message are
+// what the decoding hides behind, as the CD read did on the PlayStation - and
+// MarniHd_DeferredPending tells the door when everything has arrived.
+// ---------------------------------------------------------------------------
+typedef std::function<bool(const HdPixels&, int, int, std::vector<unsigned char>*, int*, int*)>
+    HdBuild;
+
+struct HdPending {
+    MarniDX* dx;
+    MarniHandle tex;
+    unsigned int serial;
+    std::string token;
+    HdBuild build;
+    // A model's knock-out twin, cut from the picture once it is decoded:
+    // `stp` marks the original's blending texels (w x h).
+    MarniHandle twin;
+    unsigned int twinSerial;
+    std::vector<unsigned char> stp;
+    int w, h;
+};
+static std::vector<HdPending> s_hdPending;
+
+static bool HdBuildWhole(const HdPixels& hd, int hdW, int hdH,
+                         std::vector<unsigned char>* out, int* ow, int* oh)
+{
+    *out = *hd;
+    *ow = hdW;
+    *oh = hdH;
+    return true;
+}
+
+// Part of a named page (an Effspr band): the same part of the HD page.
+static bool HdBuildRegion(const HdPixels& hd, int hdW, int hdH, int rx, int ry, int rw, int rh,
+                          int pageW, int pageH, std::vector<unsigned char>* out, int* ow, int* oh)
+{
+    if (pageW <= 0 || pageH <= 0) return false;
+    const int x0 = rx * hdW / pageW, x1 = (rx + rw) * hdW / pageW;
+    const int y0 = ry * hdH / pageH, y1 = (ry + rh) * hdH / pageH;
+    if (x0 < 0 || y0 < 0 || x1 > hdW || y1 > hdH || x1 <= x0 || y1 <= y0) return false;
+    out->resize((size_t)(x1 - x0) * (y1 - y0) * 4);
+    for (int y = y0; y < y1; y++) {
+        memcpy(&(*out)[(size_t)(y - y0) * (x1 - x0) * 4],
+               &(*hd)[((size_t)y * hdW + x0) * 4], (size_t)(x1 - x0) * 4);
+    }
+    *ow = x1 - x0;
+    *oh = y1 - y0;
+    return true;
+}
+
+// A page that stands for a file (a room's effect-sprite page): the HD file's
+// picture, recoloured where the page is the file's art in another palette row
+// (a room's tinted copy of a sprite: the greenhouse fountain's water, the
+// ESP203/ESP229 flares) - each channel scaled by the ratio of the page's
+// colour to the file's for the texel under it, so the detail stays HD and the
+// colours are the room's. A texel the page has transparent stays transparent.
+static bool HdBuildPage(const HdPixels& hd, int hdW, int hdH, const unsigned int* src,
+                        const unsigned int* ref, int width, int height,
+                        std::vector<unsigned char>* out, int* ow, int* oh)
+{
+    if (hdW < width || hdH < height) return false;
+    *out = *hd;
+    unsigned int* dst = (unsigned int*)out->data();
+    for (int y = 0; y < hdH; y++) {
+        const int ty = y * height / hdH;
+        for (int x = 0; x < hdW; x++) {
+            const int t = ty * width + x * width / hdW;
+            const unsigned int s = src[t], f = ref[t];
+            if (s == f) continue;
+            unsigned int& d = dst[(size_t)y * hdW + x];
+            if ((s >> 24) == 0) { d = 0; continue; }
+            unsigned int o = d & 0xFF000000u;
+            for (int c = 0; c < 24; c += 8) {
+                const unsigned int sc = (s >> c) & 0xFF, fc = (f >> c) & 0xFF;
+                const unsigned int dc = (d >> c) & 0xFF;
+                unsigned int v = (fc != 0) ? dc * sc / fc : sc;
+                if (v > 255) v = 255;
+                o |= v << c;
+            }
+            d = o;
+        }
+    }
+    *ow = hdW;
+    *oh = hdH;
+    return true;
+}
+
+// The knock-out twin of an HD picture: every texel over a blending texel of
+// the original (stp, w x h) cleared to alpha 0.
+static void HdKnockOut(const unsigned char* hd, int hdW, int hdH, const unsigned char* stp,
+                       int w, int h, std::vector<unsigned char>* out)
+{
+    out->assign(hd, hd + (size_t)hdW * hdH * 4);
+    unsigned int* d = (unsigned int*)out->data();
+    for (int y = 0; y < hdH; y++) {
+        const unsigned char* row = stp + (size_t)(y * h / hdH) * w;
+        for (int x = 0; x < hdW; x++) {
+            if (row[x * w / hdW]) d[(size_t)y * hdW + x] &= 0x00FFFFFFu;
+        }
+    }
+}
+
+// Uploads the original and remembers `tex` for the picture behind `token`.
+static MarniHandle HdUploadDeferred(MarniDX* dx, int width, int height, const void* rgba,
+                                    const std::string& token, const HdBuild& build)
+{
+    MarniHandle tex = dx->CreateTexture(width, height, 32, rgba, NULL, NULL);
+    if (tex == MARNI_NULL_HANDLE) return tex;
+    HdPending p;
+    p.dx = dx;
+    p.tex = tex;
+    p.serial = dx->TextureSerial(tex);
+    p.token = token;
+    p.build = build;
+    p.twin = MARNI_NULL_HANDLE;
+    p.twinSerial = 0;
+    p.w = width;
+    p.h = height;
+    s_hdPending.push_back(p);
+    return tex;
+}
+
+void MarniHd_PumpDeferred(void)
+{
+    for (size_t i = 0; i < s_hdPending.size();) {
+        HdPending& p = s_hdPending[i];
+        // Released since (a room left before its picture arrived): the
+        // handle may already name something else.
+        if (p.dx->TextureSerial(p.tex) != p.serial) {
+            s_hdPending.erase(s_hdPending.begin() + i);
+            continue;
+        }
+        HdPixels hd;
+        int hdW = 0, hdH = 0;
+        const int r = HdTextures_Poll(p.token, &hd, &hdW, &hdH);
+        if (r == 0) { ++i; continue; }
+        if (r == 1) {
+            std::vector<unsigned char> pic;
+            int w = 0, h = 0;
+            if (p.build(hd, hdW, hdH, &pic, &w, &h)) {
+                p.dx->ReplaceTexture(p.tex, w, h, pic.data());
+                if (p.twin != MARNI_NULL_HANDLE && p.dx->TextureSerial(p.twin) == p.twinSerial &&
+                    !p.stp.empty()) {
+                    std::vector<unsigned char> knock;
+                    HdKnockOut(pic.data(), w, h, p.stp.data(), p.w, p.h, &knock);
+                    p.dx->ReplaceTexture(p.twin, w, h, knock.data());
+                }
+            }
+        }
+        s_hdPending.erase(s_hdPending.begin() + i);
+    }
+}
+
+bool MarniHd_DeferredPending(void)
+{
+    MarniHd_PumpDeferred();
+    return !s_hdPending.empty();
+}
+
+// ============================================================================
+// CreateTextureHd (port-only)
+// The one place a finished RGBA8 image becomes a renderer texture. When the HD
+// texture layer (system/HdTextures.h) holds a replacement for these exact
+// pixels, that image is uploaded instead - at its own resolution, which the
+// callers never see: they keep the logical size and normalise UVs against it.
+// While a room loads (HdTextures_Deferring) a picture still being decoded
+// does not stall the upload: the original goes up and the picture follows
+// (deferred HD pictures, above).
+// ============================================================================
+static MarniHandle CreateTextureHd(MarniDX* dx, int width, int height,
+                                   const void* rgba)
+{
+    if (HdTextures_Active()) {
+        HdPixels hd;
+        int hdW = 0, hdH = 0;
+        std::string token;
+        std::vector<unsigned char> pic;
+        int pw = 0, ph = 0;
+        // An upload the caller named by its file (HdTextures_BeginSource:
+        // room backgrounds and masks) is looked up by that name first.
+        const char* key = HdTextures_SourceFor(width, height);
+        int rx = 0, ry = 0, rw = 0, rh = 0, pageW = 0, pageH = 0;
+        const bool region = key != NULL &&
+                            HdTextures_SourceRegion(&rx, &ry, &rw, &rh, &pageW, &pageH);
+        const unsigned int* ref = (key != NULL)
+            ? (const unsigned int*)HdTextures_SourceReference() : NULL;
+        if (ref != NULL) {
+            const int r = HdTextures_TryNamed(key, &hd, &hdW, &hdH, &token);
+            if (r == 1 && HdBuildPage(hd, hdW, hdH, (const unsigned int*)rgba, ref, width, height,
+                                      &pic, &pw, &ph)) {
+                MarniHandle tex = dx->CreateTexture(pw, ph, 32, pic.data(), NULL, NULL);
+                if (tex != MARNI_NULL_HANDLE) return tex;
+            }
+            if (r == 2) {
+                std::shared_ptr<std::vector<unsigned int> > src(new std::vector<unsigned int>(
+                    (const unsigned int*)rgba, (const unsigned int*)rgba + width * height));
+                std::shared_ptr<std::vector<unsigned int> > rf(new std::vector<unsigned int>(
+                    ref, ref + width * height));
+                const int w = width, h = height;
+                return HdUploadDeferred(dx, width, height, rgba, token,
+                    [src, rf, w, h](const HdPixels& px, int a, int b, std::vector<unsigned char>* o,
+                                    int* ow, int* oh) {
+                        return HdBuildPage(px, a, b, src->data(), rf->data(), w, h, o, ow, oh);
+                    });
+            }
+        }
+        if (key != NULL && !region && ref == NULL) {
+            HdTextures_DumpNamed(key, width, height, rgba);
+            const int r = HdTextures_TryNamed(key, &hd, &hdW, &hdH, &token);
+            if (r == 1) {
+                MarniHandle tex = dx->CreateTexture(hdW, hdH, 32, hd->data(), NULL, NULL);
+                if (tex != MARNI_NULL_HANDLE) return tex;
+            }
+            if (r == 2) return HdUploadDeferred(dx, width, height, rgba, token, HdBuildWhole);
+        }
+        if (region && pageW > 0 && pageH > 0) {
+            const int r = HdTextures_TryNamed(key, &hd, &hdW, &hdH, &token);
+            if (r == 1 && HdBuildRegion(hd, hdW, hdH, rx, ry, rw, rh, pageW, pageH, &pic, &pw, &ph)) {
+                MarniHandle tex = dx->CreateTexture(pw, ph, 32, pic.data(), NULL, NULL);
+                if (tex != MARNI_NULL_HANDLE) return tex;
+            }
+            if (r == 2) {
+                return HdUploadDeferred(dx, width, height, rgba, token,
+                    [rx, ry, rw, rh, pageW, pageH](const HdPixels& px, int a, int b,
+                                                   std::vector<unsigned char>* o, int* ow, int* oh) {
+                        return HdBuildRegion(px, a, b, rx, ry, rw, rh, pageW, pageH, o, ow, oh);
+                    });
+            }
+        }
+        const int r = HdTextures_TryHash(width, height, rgba, &hd, &hdW, &hdH, &token);
+        if (r == 1) {
+            MarniHandle tex = dx->CreateTexture(hdW, hdH, 32, hd->data(), NULL, NULL);
+            if (tex != MARNI_NULL_HANDLE) return tex;
+        }
+        if (r == 2) return HdUploadDeferred(dx, width, height, rgba, token, HdBuildWhole);
+        // A picture the game drew at HD size itself (HdTextures_BeginPicture:
+        // the title menu's text). A file for the hash above outranks it.
+        const void* drawn = NULL;
+        int drawnW = 0, drawnH = 0;
+        if (r == 0 && HdTextures_PictureFor(width, height, rgba, &drawn, &drawnW, &drawnH)) {
+            MarniHandle tex = dx->CreateTexture(drawnW, drawnH, 32, drawn, NULL, NULL);
+            if (tex != MARNI_NULL_HANDLE) return tex;
+        }
+    }
+    return dx->CreateTexture(width, height, 32, rgba, NULL, NULL);
+}
+
 // [6] CreateTextureHandle also builds a copy of the texture holding only the
 // opaque texels, every STP texel forced to palette index 0 - which the
 // conversion below already maps to alpha 0, exactly as the item page's knock-out
@@ -366,6 +624,92 @@ MarniHandle MarniStpKnockoutTwin(MarniHandle tex)
     if ((unsigned int)tex == 0 || (unsigned int)tex >= MARNI_HANDLE_MAX)
         return MARNI_NULL_HANDLE;
     return (MarniHandle)s_stpKnock[(unsigned int)tex];
+}
+
+// ============================================================================
+// HD model skins by file (port-only)
+// A model's TIM is loaded into a PSXTexture bank (TmdProcessingCallback), and
+// the renderer builds one texture per palette row from it: each is the WHOLE
+// image in that palette. The loader registers the bank with the EMD's source
+// key (HdTextures_SetOwnerKey), so a material asked for here is traced back to
+// its bank - `bits` is material i of the bank, i * 0x68 bytes in - and the
+// bank's pixel pointer must still be the one it was registered with.
+//
+// Every shipped EMD keeps its two palettes on separate halves: palette row 0
+// is used only by the polygons on the left 128-texel page, row 1 only by the
+// right one (scanned CHAR10, EM1000, EM1020; single-palette TIMs use theirs
+// everywhere). So one picture serves all of a model's materials: the left half
+// in palette 0 and the right half in palette 1 - what the model looks like.
+// That is what is dumped and what "HD/<key>.webp" replaces, for each material.
+// ============================================================================
+//
+// A model inside a room file (HdTextures_SetOwnerKeyPerPalette) is named per
+// palette row instead: `outPerPalette` is set, and when the TIM has more than
+// one row `rowKey` receives "<key>_P<row>" and is returned.
+static const char* HdModelKeyFor(const CMarniBits* bits, int* outMaterial,
+                                 bool* outPerPalette, char* rowKey, size_t rowKeySize)
+{
+    for (int i = 0; i < 8; i++) {
+        const BYTE* owner = (const BYTE*)bits - i * 0x68;
+        const void* tag = NULL;
+        const char* key = HdTextures_OwnerKey(owner, &tag);   // no read of owner
+        if (key == NULL) continue;
+        if (((const CMarniBits*)owner)->m_pPixelData != tag) return NULL;
+        const DWORD palettes = *(const DWORD*)(owner + 0x340);    // m_NumCLUTs
+        if ((DWORD)i >= palettes) return NULL;
+        *outMaterial = i;
+        *outPerPalette = HdTextures_OwnerPerPalette(owner);
+        if (*outPerPalette && palettes > 1) {
+            snprintf(rowKey, rowKeySize, "%s_P%d", key, i);
+            return rowKey;
+        }
+        return key;
+    }
+    return NULL;
+}
+
+static DWORD HdModelTexel(const BYTE* base, int pitch, int bpp, const WORD* clut,
+                          int x, int y)
+{
+    int idx;
+    if (bpp == 8) {
+        idx = base[y * pitch + x];
+    } else {
+        BYTE two = base[y * pitch + x / 2];
+        idx = (x & 1) ? (two >> 4) : (two & 0xF);
+    }
+    WORD c = clut[idx];
+    DWORD a = (idx == 0) ? 0x00 : 0xFF;
+    DWORD r = (c & 0x1F) * 255 / 31;
+    DWORD g = ((c >> 5) & 0x1F) * 255 / 31;
+    DWORD b = ((c >> 10) & 0x1F) * 255 / 31;
+    return (a << 24) | (b << 16) | (g << 8) | r;
+}
+
+// The model's picture as described above, into a new w*h buffer (NULL when
+// the bank's palettes are not readable). Caller frees with operator_delete.
+static DWORD* HdModelComposite(const CMarniBits* bits, int material, int w, int h,
+                               const BYTE* base, int pitch, int bpp)
+{
+    const BYTE* owner = (const BYTE*)bits - material * 0x68;
+    const int palettes = (int)*(const DWORD*)(owner + 0x340);         // m_NumCLUTs
+    const WORD* pal0 = (const WORD*)((const CMarniBits*)owner)->m_pPalette;
+    const WORD* pal1 = (palettes >= 2)
+                     ? (const WORD*)((const CMarniBits*)(owner + 0x68))->m_pPalette : pal0;
+    const SIZE_T need = (bpp == 4) ? 16 * sizeof(WORD) : 256 * sizeof(WORD);
+    if (pal0 == NULL || pal1 == NULL ||
+        plat_readable_bytes(pal0) < need || plat_readable_bytes(pal1) < need) {
+        return NULL;
+    }
+    DWORD* out = (DWORD*)operator_new((size_t)w * h * sizeof(DWORD));
+    if (out == NULL) return NULL;
+    const int split = (palettes >= 2) ? w / 2 : w;
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            out[y * w + x] = HdModelTexel(base, pitch, bpp, x < split ? pal0 : pal1, x, y);
+        }
+    }
+    return out;
 }
 
 // [6] CreateTextureHandle — 0x0044c900
@@ -520,7 +864,56 @@ static int VTable_CreateTextureHandle(void* self, void* texDesc,
         }
     }
 
-    MarniHandle tex = pD3D->m_pDX->CreateTexture(w, h, 32, rgba, NULL, NULL);
+    // Port-only: an HD model skin named by its EMD (see HdModelKeyFor). It
+    // outranks a hash-named replacement; without one the upload goes on as
+    // before.
+    int hdMaterial = 0;
+    bool hdPerPalette = false;
+    char hdRowKey[160];
+    const char* hdKey = (clutKeyed && HdTextures_Active())
+                      ? HdModelKeyFor(bits, &hdMaterial, &hdPerPalette, hdRowKey, sizeof(hdRowKey))
+                      : NULL;
+    HdPixels hdSkin;
+    int hdW = 0, hdH = 0;
+    bool hdNamed = false;
+    std::string hdToken;          // a picture still decoding (deferred upload)
+    bool hdDeferred = false;
+    if (hdKey != NULL) {
+        if (hdPerPalette) {
+            // The row's own picture is the upload itself.
+            HdTextures_DumpNamed(hdKey, w, h, rgba);
+        } else if (HdTextures_NamedDumpWanted(hdKey)) {
+            DWORD* pic = HdModelComposite(bits, hdMaterial, w, h, base, pitch, bpp);
+            if (pic != NULL) {
+                HdTextures_DumpNamed(hdKey, w, h, pic);
+                operator_delete(pic);
+            }
+        }
+        const int found = HdTextures_TryNamed(hdKey, &hdSkin, &hdW, &hdH, &hdToken);
+        hdNamed = found == 1;
+        hdDeferred = found == 2;
+    }
+
+    // Without a named skin, a replacement by hash is looked up here rather than
+    // inside CreateTextureHd, so the knock-out twin below can be cut from it
+    // as well. (Looked up on its own, the twin was a texture of its own: it
+    // was dumped, and the importer could hand it the pack's picture of the
+    // texture it is a copy of.) An upload a source names is left to
+    // CreateTextureHd.
+    if (!hdNamed && !hdDeferred && HdTextures_Active() && HdTextures_SourceFor(w, h) == NULL) {
+        const int found = HdTextures_TryHash(w, h, rgba, &hdSkin, &hdW, &hdH, &hdToken);
+        hdNamed = found == 1;
+        hdDeferred = found == 2;
+    }
+
+    MarniHandle tex = MARNI_NULL_HANDLE;
+    if (hdNamed) {
+        tex = pD3D->m_pDX->CreateTexture(hdW, hdH, 32, hdSkin->data(), NULL, NULL);
+        if (tex == MARNI_NULL_HANDLE) hdNamed = false;
+    }
+    if (hdDeferred)
+        tex = HdUploadDeferred(pD3D->m_pDX, w, h, rgba, hdToken, HdBuildWhole);
+    if (tex == MARNI_NULL_HANDLE) tex = CreateTextureHd(pD3D->m_pDX, w, h, rgba);
     if (tex == MARNI_NULL_HANDLE) { operator_delete(rgba); return 0; }
 
     // Knock-out twin - the same image with every STP texel made fully
@@ -528,7 +921,34 @@ static int VTable_CreateTextureHandle(void* self, void* texDesc,
     // RGBA so the colours are identical by construction; only the alpha moves.
     // Built only when the knock-out still carries MOST of the material, which
     // is the glass-pane shape this emulates - see the note above.
-    if (clutKeyed && stpTexels > 0 && opaqueTexels > stpTexels) {
+    //
+    // With a named HD skin the twin is the HD picture instead, each texel
+    // knocked out when the original texel under it is STP in this material's
+    // palette: which texels blend is the TIM's business, not the artist's.
+    if (hdNamed && stpTexels > 0 && opaqueTexels > stpTexels) {
+        DWORD* knock = (DWORD*)operator_new((size_t)hdW * hdH * sizeof(DWORD));
+        if (knock != NULL) {
+            const DWORD* src = (const DWORD*)hdSkin->data();
+            for (int y = 0; y < hdH; y++) {
+                const BYTE* row = base + (size_t)(y * h / hdH) * pitch;
+                for (int x = 0; x < hdW; x++) {
+                    const int lx = x * w / hdW;
+                    int idx;
+                    if (bpp == 8)    idx = row[lx];
+                    else if (lx & 1) idx = (row[lx >> 1] >> 4) & 0x0F;
+                    else             idx = row[lx >> 1] & 0x0F;
+                    DWORD c = src[y * hdW + x];
+                    if (stpIndex[idx]) c &= 0x00FFFFFFu;
+                    knock[y * hdW + x] = c;
+                }
+            }
+            MarniHandle twin = pD3D->m_pDX->CreateTexture(hdW, hdH, 32, knock, NULL, NULL);
+            operator_delete(knock);
+            if (twin != MARNI_NULL_HANDLE)
+                MarniStpKnock_Set((unsigned int)tex, (unsigned int)twin);
+        }
+    }
+    else if (clutKeyed && stpTexels > 0 && opaqueTexels > stpTexels) {
         DWORD* knock = (DWORD*)operator_new((size_t)w * h * sizeof(DWORD));
         if (knock != NULL) {
             for (int y = 0; y < h; y++) {
@@ -543,16 +963,39 @@ static int VTable_CreateTextureHandle(void* self, void* texDesc,
                     knock[y * w + x] = c;
                 }
             }
+            // Not looked up or dumped: the twin is derived from the texture,
+            // and with an HD picture it is cut from that (above).
             MarniHandle twin = pD3D->m_pDX->CreateTexture(w, h, 32, knock, NULL, NULL);
             operator_delete(knock);
             if (twin != MARNI_NULL_HANDLE) {
                 // A shared source handle (Dreamcast dedup) already has its
                 // twin, identical to this one: keep that one and drop the
                 // duplicate reference instead of orphaning the old twin.
-                if (MarniStpKnockoutTwin(tex) != MARNI_NULL_HANDLE)
+                const MarniHandle had = MarniStpKnockoutTwin(tex);
+                if (had != MARNI_NULL_HANDLE) {
                     pD3D->m_pDX->DestroyTexture(twin);
-                else
+                    twin = had;
+                } else {
                     MarniStpKnock_Set((unsigned int)tex, (unsigned int)twin);
+                }
+            }
+            // A deferred picture is cut into a twin too when it arrives.
+            if (twin != MARNI_NULL_HANDLE && hdDeferred && !s_hdPending.empty() &&
+                s_hdPending.back().tex == tex) {
+                HdPending& pend = s_hdPending.back();
+                pend.twin = twin;
+                pend.twinSerial = pD3D->m_pDX->TextureSerial(twin);
+                pend.stp.resize((size_t)w * h);
+                for (int y = 0; y < h; y++) {
+                    const BYTE* row = base + (size_t)y * pitch;
+                    for (int x = 0; x < w; x++) {
+                        int idx;
+                        if (bpp == 8)   idx = row[x];
+                        else if (x & 1) idx = (row[x >> 1] >> 4) & 0x0F;
+                        else            idx = row[x >> 1] & 0x0F;
+                        pend.stp[(size_t)y * w + x] = stpIndex[idx];
+                    }
+                }
             }
         }
     }
@@ -808,6 +1251,32 @@ void MarniDrawSprite(float x, float y, float w, float h,
                              MARNI_BLEND_ALPHA);
 }
 
+void MarniDrawSpriteAdd(float x, float y, float w, float h,
+                        float u0, float v0, float u1, float v1,
+                        DWORD color, MarniHandle tex)
+{
+    CMarniDirect3D* pD3D = (CMarniDirect3D*)g_pMarniDirect3D;
+    if (!pD3D || !pD3D->m_isInitialized) return;
+    pD3D->m_pDX->DrawSprite(x, y, w, h, u0, v0, u1, v1,
+                             color, tex, MARNI_SAMPLER_POINT,
+                             MARNI_BLEND_ADD);
+}
+
+// Port-only: src * srcAlpha + dst. The PS1's additive semi-transparency modes
+// (ABR 1 = B + F, ABR 3 = B + F/4) for the effect sprites, with the rate in
+// the vertex alpha; unlike MarniDrawSpriteAdd the texel alpha still keys out
+// the transparent texels, so an HD page with colour under alpha 0 adds nothing.
+void MarniDrawSpriteAddAlpha(float x, float y, float w, float h,
+                             float u0, float v0, float u1, float v1,
+                             DWORD color, MarniHandle tex)
+{
+    CMarniDirect3D* pD3D = (CMarniDirect3D*)g_pMarniDirect3D;
+    if (!pD3D || !pD3D->m_isInitialized) return;
+    pD3D->m_pDX->DrawSprite(x, y, w, h, u0, v0, u1, v1,
+                             color, tex, MARNI_SAMPLER_POINT,
+                             MARNI_BLEND_ADD_ALPHA);
+}
+
 // Only the ground shadow / blood pool (AddFadePoly, type 12) draws through
 // here, and it stretches a 26x29 gradient over a quad several times that size.
 // Point sampling turned the soft blob into visible texel blocks with straight
@@ -857,7 +1326,23 @@ BOOL MarniCreateTexture(int width, int height, int bpp, const void* pixelData,
     CMarniDirect3D* pD3D = (CMarniDirect3D*)g_pMarniDirect3D;
     if (!pD3D || !pD3D->m_isInitialized || !outTex) return FALSE;
 
-    *outTex = pD3D->m_pDX->CreateTexture(width, height, bpp, pixelData,
-                                         NULL, NULL);
+    // Every caller in the game layer hands over finished RGBA8; the other
+    // depths are the renderer's own conversions and are left alone.
+    if (bpp == 32) {
+        *outTex = CreateTextureHd(pD3D->m_pDX, width, height, pixelData);
+    } else {
+        *outTex = pD3D->m_pDX->CreateTexture(width, height, bpp, pixelData,
+                                             NULL, NULL);
+    }
+    return (*outTex != MARNI_NULL_HANDLE);
+}
+
+BOOL MarniCreateTextureRaw(int width, int height, const void* rgba,
+                           MarniHandle* outTex)
+{
+    CMarniDirect3D* pD3D = (CMarniDirect3D*)g_pMarniDirect3D;
+    if (!pD3D || !pD3D->m_isInitialized || !outTex) return FALSE;
+
+    *outTex = pD3D->m_pDX->CreateTexture(width, height, 32, rgba, NULL, NULL);
     return (*outTex != MARNI_NULL_HANDLE);
 }

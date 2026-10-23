@@ -70,6 +70,12 @@ build.bat
 > stack switching (cross-TU inlining assumes standard prologues), which caused
 > intermittent crashes at room load. Don't re-enable it.
 
+> **Note:** never call raw `OutputDebugStringA` from code that can run inside
+> a scheduler task — without a debugger it fail-fasts the process
+> (`0xC0000409`) because the exception cannot be dispatched on the task's
+> switched stack. Use `dbg_printf` / `dbg_safe_str` (`src/DebugPrint.h`),
+> which are gated on `IsDebuggerPresent`.
+
 To build from a developer command prompt instead:
 ```
 msbuild Game.sln /p:Configuration=Release /p:Platform=Win32 /t:Build
@@ -169,111 +175,104 @@ X11/Wayland and ALSA/PulseAudio clients, so the bundle does not depend on the
 target's 32-bit package set.
 
 Game data is not included, same as the Windows release — migrate your own copy
-into place with the asset migrator (below) and put the `USA/` (and optionally
+into place with the [asset migrator](INSTALLATION.md#asset-migration) and put the `USA/` (and optionally
 `JPN/`, and the Director's Cut `DC/`) trees next to the launcher.
 
-### Running the game
+## Installation
 
-The decompilation took as base the GOG USA version, which is the same binary
-released in 1997, so this build expects the assets of any of those versions.
+Getting the game data into place - which releases are supported, the asset
+migrator, the folder layout, `config.ini` and choosing the USA / JPN release -
+is covered in [INSTALLATION.md](INSTALLATION.md).
 
-Some features of the Japanese PC release (*Biohazard* Mediakite version) is supported as well
+## Features
 
-The PS1 Director's Cut's content also runs, as an overlay on top of either base
-tree. Use the asset migrator (below) to lay out `USA/`, `JPN/` and the
-Director's Cut `DC/` overlay. The PS1 ending credits can replace the PC's
-credit movies in either mode; see [PS1 ending credits](#ps1-ending-credits).
+### WebP backgrounds and HD textures
 
-Every asset path is built against a data root that is resolved at startup:
+The port has an **HD mode**: high-resolution backgrounds, textures, model skins,
+movies and fonts, all optional and all read from files. With no `HD/` folder the
+game looks exactly as the original. Everything below is read as **WebP** (lossy
+or lossless, any resolution) unless noted:
 
-| What | Comes from | Default |
-|---|---|---|
-| Assets folder | `[Assets] Path` in `config.ini` | the executable's own directory |
-| Region tree | `[Assets] Version` (`USA` / `JPN`) | `USA` |
-| Save folder | `[Save] Path` in `config.ini` | `<assets folder>/SAVE` |
-
-Relative paths are resolved from the **executable's directory**, never from the
-working directory, so launching through a shortcut or a launcher with an
-arbitrary CWD behaves the same. With nothing configured, put the region folder
-next to the executable:
-
-```
-RE1/
-  residentevil
-  config.ini
-  USA/
-  JPN/
-  DC/        (Director's Cut overlay; optional)
-  SAVE/
-```
-
-The development tree keeps the assets under `assets/` one level above the build
-directory, so its `config.ini` sets `Path=../../assets`. Under the VS debugger
-the executable is in `bin\Debug\`, so that build needs `Path=..\..\assets` too.
-
-### config.ini
-
-The game reads `config.ini` from the executable's directory first (falling back
-to the working directory) and creates one with commented defaults if none is
-present. Release packages ship `config.ini.template` from the repository root as
-that initial `config.ini`. The `[Display]`, `[Player]` and `[Input]` keys are
-saved on exit; `[Assets]`, `[Save]`, `[Game]` and `[Debug]` are yours to edit and
-are never rewritten.
-
-### Asset version (USA / JPN)
-
-`[Assets] Version` in `config.ini` selects which release the build runs. It is
-read once at startup (`src/system/ConfigFile.cpp` → `SetAssetVersion`,
-`src/system/AssetPath.cpp`) and swaps the data root every asset reader uses, so
-**one binary runs either version** — no rebuild:
+- **Room backgrounds.** A `Stage<n>/RC*.webp` file is used in place of the
+  `.pak` of the same name. The asset migrator can write a whole tree that way
+  (*Room backgrounds* option: lossless is the same picture about 20 % smaller),
+  and a hand-made high-resolution background is installed the same way.
+- **HD textures.** Any other texture - models, items, menus, fonts, room masks
+  - can be replaced by dropping `<hash>.webp` into an `HD/` folder beside
+  `USA/` (or into a sub-folder of it, to group a pack by type). Set `DumpTextures=1` to have the game write the originals, named by
+  that hash, to `HD/dump/`.
+- **Model skins.** A character or enemy skin can also be named after its model,
+  `HD/<TREE>/ENEMY/EM1010.webp` (`TREE` = the folder the model was read from).
+- **HD movies.** `HD/USA/MOVIE/OU.mp4` is played ahead of the tree's own
+  `.mp4` / `.avi`.
+- **HD fonts.** Text is drawn in real TrueType fonts instead of the bitmap
+  sheets: Archivo Black for the title menu, Archivo Narrow for the 8x8 text and
+  Libertinus Serif / M PLUS 2 for the in-game messages, item names and files
+  (`HD/<USA|JPN>/Data/TITLEFNT.TTF`, `FONTUS.TTF` / `FONT.TTF`,
+  `FONTUS_14.TTF` / `FONT_14.TTF`). The asset migrator's HD Pack tab installs
+  them; the fonts are under the SIL OFL 1.1.
 
 ```ini
-[Assets]
-; Folder holding the USA/ and JPN/ trees; relative to the executable's
-; directory. Empty = the executable's directory itself.
-Path=
-; USA = North American (default)
-; JPN = Japanese (Biohazard)
-Version=USA
-
-[Save]
-; Where savedat*.dat lives. Empty = <Assets Path>/SAVE, which with the default
-; [Assets] Path is SAVE/ next to the executable.
-Path=
+[Textures]
+HdTextures=1     ; use HD/<hash>.webp replacements (default; free with no HD/ folder)
+DumpTextures=0   ; 1 = write every texture to HD/dump/<hash>.png
 ```
 
-Diagnostics: with no debugger attached, trace output is suppressed (see
-below); set the environment variable `RE1_DEBUGLOG=1` to append every trace
-line to `re1_debug.log` next to the exe instead. Fatal startup errors also
-append a symbolized stack trace to `crash.log`.
+`docs/HD_TEXTURES.md` explains how to make a pack and what its limits are. The
+asset migrator's **HD Pack** tab imports the Seamless HD Project pack format (made for Classic REbirth) into `HD/`, grouped by texture type:
+backgrounds and masks from a built-in table, model skins under the model's
+name, the Seamless HD Project movies, and the rest by matching against the
+game's own texture dump. Set `HdTextures=0` or in the game settings menu to switch all of HD mode off without
+removing the folder.
 
-> **Note:** never call raw `OutputDebugStringA` from code that can run inside
-> a scheduler task — without a debugger it fail-fasts the process
-> (`0xC0000409`) because the exception cannot be dispatched on the task's
-> switched stack. Use `dbg_printf` / `dbg_safe_str` (`src/DebugPrint.h`),
-> which are gated on `IsDebuggerPresent`.
+### Options menu (title screen)
 
-### Asset migration
+The title menu is **NEW GAME / LOAD GAME / EXTRA / OPTIONS** in every mode
+(EXTRA appears only while the Battle Game is offered). OPTIONS opens a menu of
+its own with four pages, so none of the settings below need a text editor:
 
-No game data is distributed with this repository. The player-facing importer is a
-portable Qt GUI in `tools/asset_migrator/` (released as
-`asset-migrator-<version>-windows-x64.zip`). It has two tabs:
+| Page | What it holds |
+|---|---|
+| **DISPLAY** | Window mode (windowed / borderless fullscreen), resolution, vsync. The picture always stays 4:3: a widescreen monitor or window size gets black bars instead of a stretched image. Resolution is the window's size; fullscreen uses the desktop's. |
+| **INPUT** | Every control, for the keyboard and for the gamepad: select a cell and press the new key or button. Each device has a reset row. The arrow keys, Enter and Esc always work in this menu, whatever is bound. |
+| **GAME** | Game mode, region, PS1 ending credits, PS1 FMV subtitles, skip any FMV, Battle Game, western difficulty - the `[Game]` keys and `[Assets] Version` described in the sections below. An entry whose assets are not installed cannot be selected. |
+| **BONUS** | The outfit each playable character wears, with the model shown beside the list, and an on/off switch for each bonus weapon you have unlocked. Moving onto a weapon row shows its owner aiming it: Chris with the rocket launcher and the Minimi, Jill with the Colt Python and the Ingram. |
 
-- **PC Assets** — migrates a base tree from a folder (an installed GOG/retail
-  copy) or from a disc image. Choose **USA** or **Japanese** for the destination
-  (`USA/` or `JPN/`), and optionally convert the `Movie/*.avi` files to `.mp4`.
-  The port prefers a `.mp4` sibling of the FMV table's `.avi` and falls back to
-  the AVI, so keeping both is safe. Requires `ffmpeg` on `PATH` for the
-  conversion.
-- **Director's Cut** — builds the `DC/` overlay from a Director's Cut disc image.
-  An image is required: a raw 2352-byte `.bin`/`.cue` keeps the `.STR` movies'
-  CD-XA audio, which a 2048-byte copy truncates. Every DC room and all
-  backgrounds are migrated.
+Game mode and region are read once at start-up, so changing either needs a
+restart: **APPLY AND RESTART** on the GAME page does it for you, and leaving the
+menu without it keeps the change for the next start.
 
-The tool's own `README.md` covers building it, its options and the headless
-verifier. The same migrations are scriptable on either platform through the
-Python tools (`tools/port_dc_assets.py`, `tools/bss_to_pak.py`,
-`tools/str_to_video.py`).
+**Bonuses** are kept in `bonus.dat` in the save folder, across every save and
+every mode:
+
+| Bonus | How it is unlocked |
+|---|---|
+| Alternate outfit (Chris, Jill) | getting the special key, in any mode |
+| PC outfit (Chris, Jill) | getting the special key in the original mode |
+| Director's Cut outfit (Chris, Jill, Rebecca) | clearing the Director's Cut's ADVANCED (arrange) game |
+| Saturn outfit (Chris, Jill) | getting the special key in Saturn mode |
+| Rocket launcher | earning it at the ending, in any mode |
+| Colt Python | the ADVANCED best ending of the Director's Cut |
+| Ingram (Jill) / Minimi (Chris) | earning it at the ending in the original mode |
+
+An outfit other than DEFAULT is worn in every mode, in the campaign and in the
+Battle Game, and takes priority over the wardrobe. A bonus weapon that is
+switched on is put in the item box when a **new game** of the campaign starts;
+the Battle Game never uses the bonus weapons (nor the Colt Python's infinite
+ammo). The Director's
+Cut and Saturn outfits need those releases migrated (see [Asset migration](INSTALLATION.md#asset-migration)).
+
+The menu needs the title font, `Data/TITLEFNT.BIN`, which the asset migrator's
+PC tab writes; without it the title keeps the art the release shipped with and
+has no OPTIONS item.
+
+### Options menu (in game)
+
+The button that opened the original options screen ("A" key) now opens the same menu in game, cut down to
+**DISPLAY**, **INPUT**, **BACK TO TITLE** (asks for confirmation; unsaved
+progress is lost) and **BACK** (Esc / cancel does the same) to return to the
+game. The pages are the title menu's, so a rebinding made here applies at once.
+The room's music keeps playing underneath.
 
 ### Director's Cut mode
 
@@ -352,6 +351,34 @@ It is off by default, so the shipped behaviour is the original's masks. The
 original's 100-frame grace period still applies, so a press during the first few
 seconds of a movie is ignored.
 
+### Battle Game (Saturn mode)
+
+Sega Saturn mode carries a second game mode the other releases never had: the
+**Battle Game**, a fixed 15-arena run through `STAGE8` with a preset loadout,
+scored on the ammo you did not spend. It is reached from the title menu's
+EXTRA item.
+
+The Saturn unlocks that item with **any ending**, or with a port-2
+**X + Y + Z + Start** code on the press-start screen. The code is not ported
+there is no second controller — so if you would rather not clear a game first,
+force it on:
+
+```ini
+[Game]
+Mode=SATURN
+; 1 = offer the BATTLE GAME item without having cleared a game
+BattleGame=1
+```
+
+It is off by default and only does anything with `Mode=SATURN`. It is a
+read-time override: it never writes the unlock into a save, so a game finished
+with it on still records only what you actually earned. Clearing the game once
+also unlocks it for real, permanently, in that save.
+
+**Status:** the entry into a run is ported — the item, the loadout and the first
+arena's art all work. The arena sequence itself is not finished, so a run ends
+at the first arena. See `docs/SATURN_PORT.md`.
+
 ## Controls
 
 The port keeps the original 1997 input model: every binding is a *function*
@@ -408,10 +435,15 @@ on a throttle and takes over slot 0 when a pad appears.
 
 ### Rebinding
 
-Both layouts are editable in-game from the options screen (the original
-"Key Def" / "Joy Def" screens, `src/game/OptionsMenu.cpp`), including the four
-original direction-mapping presets. Bindings are persisted with the rest of
-the video/sound settings on exit.
+Both layouts are editable from the INPUT page of the title screen's OPTIONS
+menu and from the in-game options menu (see *Options menu* above). Bindings
+are saved to `config.ini`. The original in-game screen ("Key Def" / "Joy Def",
+with its four direction-mapping presets, `src/game/OptionsMenu.cpp`) is no
+longer reachable.
+
+As in the original, a save file carries the bindings it was made with, and
+loading it restores them - so loading a save made before a rebind brings the
+old layout back until you save again.
 
 ### System keys
 
@@ -451,6 +483,8 @@ backend.
   (MCI on Windows, ffmpeg on Linux).
 - `docs/` — architecture notes: task scheduler, memory layout, classes and
   vtable conventions, implementation plan, and `LINUX_PORT.md` for the port.
+- `src/third_party/` — vendored single-file decoders (`stb_vorbis.c`,
+  `simplewebp.h`); their licences are in `THIRD_PARTY_NOTICES.txt`.
 - `tests/` — build/verification scripts (compile gate, frame comparison).
 - `tools/` — tools used to help decompilation
 
