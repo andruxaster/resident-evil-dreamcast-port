@@ -14,7 +14,16 @@ endif
 
 .DEFAULT_GOAL := all
 
+# 1 = with the Sega Saturn content of upstream 1.4.0 (src/game/saturn: Saturn
+# mode, the Tick, the Battle Game). Needs the SATURN/ asset overlay on the disc
+# and ~1.3 MB more RAM for the converted Saturn models. 0 = left out, stubbed
+# (src/platform/dreamcast/saturn_stubs.cpp). Each variant builds in its own folder.
+RE1_DC_SATURN ?= 0
+ifeq ($(RE1_DC_SATURN),1)
+BUILD      := build/dc-saturn
+else
 BUILD      := build/dc
+endif
 TARGET     := $(BUILD)/residentevil.elf
 RE1_DC_ROOT ?= /cd
 RE1_DC_VERBOSE ?= 0
@@ -42,6 +51,9 @@ RE1_DC_FILECACHE ?= 1
 OPEN  := (
 CLOSE := )
 SHARED_SRCS := $(shell sed -n '/^set$(OPEN)RE1_SOURCES/,/^$(CLOSE)/p' CMakeLists.txt | grep -o 'src/[^ ]*\.cpp')
+ifneq ($(RE1_DC_SATURN),1)
+SHARED_SRCS := $(filter-out src/game/saturn/%,$(SHARED_SRCS))
+endif
 
 DC_SRCS := \
     src/platform/dreamcast/platform.cpp \
@@ -54,6 +66,10 @@ DC_SRCS := \
     src/platform/dreamcast/vmu_save.cpp \
     src/platform/dreamcast/dc_iso.cpp \
     src/platform/dreamcast/main.cpp
+
+ifneq ($(RE1_DC_SATURN),1)
+DC_SRCS += src/platform/dreamcast/saturn_stubs.cpp
+endif
 
 ifeq ($(RE1_DC_RENDERER),null)
 DC_SRCS += src/marni/MarniDX_Null.cpp
@@ -101,7 +117,7 @@ endif
 #     unaligned accesses (SH-4 raises an address error on every one).
 RE1_CXXFLAGS := -std=gnu++17 -O2 -w -fno-strict-aliasing -fwrapv \
                 -Isrc -include src/platform/dreamcast/dc_compat.h -DRE1_DC_ROOT='"$(RE1_DC_ROOT)"' \
-                -DRE1_DC_VERBOSE=$(RE1_DC_VERBOSE) -DRE1_PVR_DEBUG=$(RE1_PVR_DEBUG) -DRE1_DC_SILENT=$(RE1_DC_SILENT) -DRE1_DC_TRACE=$(RE1_DC_TRACE) -DRE1_DC_FTRACE=$(RE1_DC_FTRACE) -DRE1_DC_POISON=$(RE1_DC_POISON) -DRE1_DC_PROF=$(RE1_DC_PROF) -DRE1_DC_UACOUNT=$(RE1_DC_UACOUNT) -DRE1_DC_FILECACHE=$(RE1_DC_FILECACHE)
+                -DRE1_DC_VERBOSE=$(RE1_DC_VERBOSE) -DRE1_PVR_DEBUG=$(RE1_PVR_DEBUG) -DRE1_DC_SILENT=$(RE1_DC_SILENT) -DRE1_DC_TRACE=$(RE1_DC_TRACE) -DRE1_DC_FTRACE=$(RE1_DC_FTRACE) -DRE1_DC_POISON=$(RE1_DC_POISON) -DRE1_DC_PROF=$(RE1_DC_PROF) -DRE1_DC_UACOUNT=$(RE1_DC_UACOUNT) -DRE1_DC_FILECACHE=$(RE1_DC_FILECACHE) -DRE1_DC_SATURN=$(RE1_DC_SATURN)
 
 all: $(TARGET)
 

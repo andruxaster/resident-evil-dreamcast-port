@@ -1783,7 +1783,7 @@ extern DWORD        g_effectAnimData[425];              // 0x00bf0b1c - per-type
 struct EntityModelStorage {
     BYTE first[52224];    // 0x00bf11c0
     BYTE second[56320];   // 0x00bfddc0
-#if defined(__DREAMCAST__)
+#if defined(__DREAMCAST__) && !RE1_DC_SATURN
     BYTE spillGuard[16384];  // MERGE140: stock models only (char11.emd spills 4424 B)
 #else
     BYTE spillGuard[262144]; // not part of the original layout - see above
@@ -1807,8 +1807,8 @@ extern BYTE          g_shootDirEspBuffer[73728];
 // original 832 KB. Nothing addresses the buffer past its original end, so the
 // original layout inside it is unchanged.
 #define DATA_BUFFER_ORIGINAL_SIZE  832728
-#if defined(__DREAMCAST__)
-// MERGE140: no Saturn models on the Dreamcast disc - and no 1 MB to spare.
+#if defined(__DREAMCAST__) && !RE1_DC_SATURN
+// MERGE140: no Saturn models in this Dreamcast build - and no 1 MB to spare.
 #define DATA_BUFFER_PORT_HEADROOM  0
 #else
 #define DATA_BUFFER_PORT_HEADROOM  0x100000
