@@ -29,6 +29,12 @@ typedef struct AudioFileData {
     int            ps1;        // written by the asset migrator (PS1 audio)
     unsigned int   loopBegin;  // frames; loopEnd > loopBegin only when set
     unsigned int   loopEnd;    // frames, exclusive
+    // IMA ADPCM WAV (format 0x11) - Dreamcast only, the other backends never
+    // see one: bitsPerSample is 4, `pcm`/`pcmSize` are the compressed blocks.
+    int            formatTag;       // 1 = PCM, 0x11 = IMA ADPCM
+    int            blockAlign;      // IMA: bytes per block (all channels)
+    int            samplesPerBlock; // IMA: frames per block
+    unsigned int   frames;          // IMA: total frames ('fact' or computed)
 } AudioFileData;
 
 // Which file `path` (already run through ResolveAssetRoot) names on disk: for a
