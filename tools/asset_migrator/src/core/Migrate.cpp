@@ -5,6 +5,8 @@
 #include "core/DiscImage.h"
 #include "core/Jimaku.h"
 #include "core/Ps1Audio.h"
+#include "core/HdFonts.h"
+#include "core/TitleFont.h"
 #include "core/Util.h"
 #include "core/Video.h"
 
@@ -195,12 +197,63 @@ bool migratePs1Supplement(const PcMigrationOptions& opts,
     return true;
 }
 
+// The title menu's typeface (core/TitleFont.h) into <tree>/Data. The game
+// draws NEW GAME / LOAD GAME / EXTRA / OPTIONS with it in every mode, so it
+// belongs to the base tree, not to an overlay.
+bool writeTitleFont(const std::string& tree, const Progress& progress,
+                    std::string* error) {
+    const std::string dataDir = childDir(tree, "Data");
+    const std::string path = joinPath(dataDir, "TITLEFNT.BIN");
+    const std::vector<uint8_t> font = buildTitleFont();
+    if (!makeDirs(dataDir) || !writeFile(path, font)) {
+        if (error) *error = "cannot write " + path;
+        return false;
+    }
+    progress.info("title menu font -> " + path + " (" +
+                  std::to_string(font.size()) + " bytes)");
+    return true;
+}
+
 }  // namespace
+
+int copyBonusOutfits(const std::string& targetRoot, const std::string& sourceEnemyDir,
+                     const std::vector<BonusOutfitFile>& files,
+                     const Progress& progress) {
+    int written = 0;
+    for (const char* region : {"USA", "JPN"}) {
+        const std::string tree = joinPath(targetRoot, region);
+        if (!isDirectory(tree)) continue;
+        const std::string enemyDir = childDir(tree, "Enemy");
+        for (const BonusOutfitFile& f : files) {
+            // The source name is matched without regard to case; the
+            // destination is written as given.
+            std::string src;
+            for (const auto& e : listDirectory(sourceEnemyDir)) {
+                if (toLower(e) == toLower(f.source)) src = joinPath(sourceEnemyDir, e);
+            }
+            std::vector<uint8_t> data;
+            if (src.empty() || !readFile(src, &data)) {
+                progress.info("  bonus outfit " + f.source + " not found in " +
+                              sourceEnemyDir + " - skipped");
+                continue;
+            }
+            const std::string dst = joinPath(enemyDir, f.dest);
+            if (!makeDirs(enemyDir) || !writeFile(dst, data)) {
+                progress.info("  cannot write " + dst);
+                continue;
+            }
+            progress.info("  " + f.source + " -> " + dst + "  (" + f.what + ")");
+            ++written;
+        }
+    }
+    return written;
+}
 
 bool migratePcAssets(const PcMigrationOptions& opts, const Progress& progress,
                      std::string* error) {
     progress.info("PC asset migration");
-    if (opts.sourcePath.empty() && opts.ps1ImagePath.empty()) {
+    const bool webp = opts.backgroundFormat != BackgroundFormat::Pak;
+    if (opts.sourcePath.empty() && opts.ps1ImagePath.empty() && !webp) {
         if (error) *error = "no source selected";
         return false;
     }
@@ -219,7 +272,9 @@ bool migratePcAssets(const PcMigrationOptions& opts, const Progress& progress,
     // the restored .wav), then the copy puts the originals back.
     if (!opts.sourcePath.empty()) removePs1Audio(destRoot, progress);
 
-    if (opts.sourcePath.empty()) {
+    if (opts.sourcePath.empty() && opts.ps1ImagePath.empty()) {
+        progress.info("no source: converting the existing tree's backgrounds");
+    } else if (opts.sourcePath.empty()) {
         progress.info("no PC source: adding the PS1 assets to the existing tree");
     } else if (opts.sourceIsImage) {
         progress.info("source: " + opts.sourcePath + " (disc image)");
@@ -247,11 +302,27 @@ bool migratePcAssets(const PcMigrationOptions& opts, const Progress& progress,
             return false;
     }
 
+    // Carried by the tool, not read from any disc; written on every run so a
+    // tree migrated before the font moved here gets it too.
+    if (!writeTitleFont(destRoot, progress, error)) return false;
+    // The HD fonts belong to the HD folder; only refreshed here when there is
+    // one already, since creating HD/ switches HD textures on.
+    if (isDirectory(joinPath(opts.targetRoot, "HD")) &&
+        !writeHdFonts(opts.targetRoot, opts.version, progress, error))
+        return false;
+
     // After the AVI conversion, so the "tree already has it" check sees the
     // PC movies' .mp4 as well.
     if (!opts.ps1ImagePath.empty() &&
         !migratePs1Supplement(opts, destRoot, progress, error))
         return false;
+
+    // Last, on the finished tree: a PC copy has just put every .pak back.
+    BackgroundFormatOptions bg;
+    bg.format = opts.backgroundFormat;
+    bg.quality = opts.webpQuality;
+    bg.ffmpegPath = opts.ffmpegPath;
+    if (!applyBackgroundFormat(destRoot, bg, progress, error)) return false;
 
     progress.info("done: " + destRoot);
     return true;
@@ -316,6 +387,17 @@ bool migrateDcAssets(const DcMigrationOptions& opts, const Progress& progress,
         return false;
     }
 
+    // The arrange game's outfits as bonus outfits: the game offers them in
+    // every mode once ADVANCED is cleared (src/game/Bonus.h), so it needs them
+    // in the base tree. The DC calls them EM1032 / EM1033 - the PC's own
+    // alternate outfits' names - hence the copies take names no release uses.
+    progress.info("bonus outfits: the arrange game's player models -> the base tree");
+    copyBonusOutfits(opts.targetRoot, childDir(overlay, "Enemy"),
+                     {{"EM1032.EMD", "EM1052.EMD", "Chris, Director's Cut outfit"},
+                      {"EM1033.EMD", "EM1053.EMD", "Jill, Director's Cut outfit"},
+                      {"EM1035.EMD", "EM1055.EMD", "Rebecca, Director's Cut outfit"}},
+                     progress);
+
     int planes = 0;
     if (opts.fmvSubtitles) {
         // Into the JPN tree, not the overlay: the subtitle loader reads the
@@ -370,6 +452,16 @@ bool migrateDcAssets(const DcMigrationOptions& opts, const Progress& progress,
             cleanup();
             return false;
         }
+    }
+
+    // After the verify, which reads the .pak files the build just wrote.
+    BackgroundFormatOptions bg;
+    bg.format = opts.backgroundFormat;
+    bg.quality = opts.webpQuality;
+    bg.ffmpegPath = opts.ffmpegPath;
+    if (!applyBackgroundFormat(overlay, bg, progress, error)) {
+        cleanup();
+        return false;
     }
 
     cleanup();

@@ -9,8 +9,10 @@
 //   - GetStatus returns 1 while the bank is playing, 0 otherwise
 //
 // Dreamcast specifics
-//   - Output: one stereo KOS sound stream (snd_stream) at 22050 Hz, or 44100
-//     Hz for the asset migrator's PS1 audio tree. KOS streams are pull-based
+//   - Output: one stereo KOS sound stream (snd_stream) at 22050 Hz, always
+//     (not 44100 for the asset migrator's PS1 audio tree, as on PC/Linux:
+//     that doubles the mixing work; convert the files to 22050 instead -
+//     tools/dreamcast/compress_audio.py --max-rate 22050). KOS streams are pull-based
 //     but only progress when snd_stream_poll() runs, so a small KOS thread
 //     polls every few ms; a mutex guards the banks against the game thread.
 //   - Banks stay in main RAM as decoded PCM (AudioFile_Load), exactly like the
@@ -82,6 +84,15 @@ struct Bank {
     uint32_t loopBegin, loopEnd;// frames; loopEnd 0 = whole buffer
     bool     ps1;               // linear interpolation (PS1 audio only)
     char     name[64];
+    // IMA ADPCM banks (IMA_ADPCM): `pcm` holds the compressed blocks; one block
+    // at a time is decoded into `dec` when the mixer reaches it.
+    bool     ima;
+    uint32_t bytes;             // RAM held by wavData's sound data
+    uint16_t blockAlign;        // bytes per block, all channels
+    uint16_t spb;               // frames per block
+    int16_t* dec;               // spb * channels decoded samples
+    uint32_t decBase;           // first frame in dec
+    uint32_t decCount;          // frames in dec (0 = nothing decoded)
 };
 
 Bank s_banks[MAX_BANKS];
@@ -116,8 +127,80 @@ long s_streamEnd = 0;
 long s_streamPos = 0;
 int  s_streamOn  = 0;
 
-inline int32_t ReadSample(const Bank& b, uint32_t frame, int channel)
+// ---------------------------------------------------------------------------
+// IMA ADPCM (IMA_ADPCM). Microsoft's WAV layout, as ffmpeg's adpcm_ima_wav
+// writes it: per block, a 4-byte header per channel (int16 sample, which is
+// also the block's first frame, then the step index), then the channels'
+// nibbles interleaved 4 bytes (8 samples) at a time, low nibble first.
+// ---------------------------------------------------------------------------
+const int16_t kImaStep[89] = {
+    7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
+    50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230,
+    253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963,
+    1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327,
+    3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442,
+    11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794,
+    32767 };
+const int8_t kImaIndex[16] = { -1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8 };
+
+// Decode block `blk` of an IMA bank into b.dec. Called from the mixer (s_lock
+// held) when a frame outside the decoded block is asked for.
+void ImaDecodeBlock(Bank& b, uint32_t blk)
 {
+    const int ch = b.channels;
+    const uint32_t off = blk * (uint32_t)b.blockAlign;
+    b.decBase = blk * (uint32_t)b.spb;
+    b.decCount = 0;
+    if (off >= b.bytes) return;
+    uint32_t avail = b.bytes - off;
+    if (avail > b.blockAlign) avail = b.blockAlign;
+    if (avail < (uint32_t)(4 * ch)) return;
+    uint32_t n = (avail - 4 * ch) / (4 * ch) * 8 + 1;
+    if (n > b.spb) n = b.spb;
+    if (b.decBase + n > b.frames) n = b.frames - b.decBase;
+
+    const uint8_t* p = b.pcm + off;
+    int pred[2], idx[2];
+    for (int c = 0; c < ch; ++c) {
+        pred[c] = (int16_t)(p[c * 4] | (p[c * 4 + 1] << 8));
+        idx[c] = p[c * 4 + 2];
+        if (idx[c] > 88) idx[c] = 88;
+        b.dec[c] = (int16_t)pred[c];
+    }
+    p += 4 * ch;
+    for (uint32_t i = 1; i < n; i += 8) {
+        for (int c = 0; c < ch; ++c) {
+            int16_t* out = b.dec + i * ch + c;
+            for (int k = 0; k < 8; ++k) {
+                const int nib = (k & 1) ? (p[k >> 1] >> 4) : (p[k >> 1] & 0x0F);
+                const int step = kImaStep[idx[c]];
+                // ffmpeg's rounding (its encoder predicts with the same), not
+                // the shift-and-add of the IMA reference: up to ~120 LSB apart.
+                const int diff = ((2 * (nib & 7) + 1) * step) >> 3;
+                int v = (nib & 8) ? pred[c] - diff : pred[c] + diff;
+                if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
+                pred[c] = v;
+                int ni = idx[c] + kImaIndex[nib];
+                idx[c] = ni < 0 ? 0 : ni > 88 ? 88 : ni;
+                if (i + k < n) out[k * ch] = (int16_t)v;
+            }
+            p += 4;
+        }
+    }
+    b.decCount = n;
+}
+
+inline int32_t ReadSample(Bank& b, uint32_t frame, int channel)
+{
+    if (b.ima) {
+        uint32_t k = frame - b.decBase;
+        if (k >= b.decCount) {
+            ImaDecodeBlock(b, frame / b.spb);
+            k = frame - b.decBase;
+            if (k >= b.decCount) return 0;
+        }
+        return b.dec[k * (uint32_t)b.channels + (uint32_t)channel];
+    }
     const uint32_t idx = frame * (uint32_t)b.channels + (uint32_t)channel;
     if (b.bits == 8) return ((int32_t)b.pcm[idx] - 128) << 8;   // unsigned 8-bit
     return (int32_t)(int16_t)((unsigned)b.pcm[idx * 2] | ((unsigned)b.pcm[idx * 2 + 1] << 8));
@@ -130,21 +213,29 @@ float MillibelsToAmplitude(int mB)
     return powf(10.0f, (float)mB / 2000.0f);
 }
 
+// MERGE140: IDirectSoundBuffer::Stop leaves the play cursor where it is, and
+// the original's PlaySound (0x0041ee60) only rewinds a buffer that is still
+// playing - so a stopped bank resumes. PauseSounds / ResumePausedSounds are
+// built on exactly that (same as the Linux backend since 1.4.0).
 void StopBank(Bank& b)
 {
     b.playing = false;
     b.status = 0;
-    b.pos = 0;
-    b.frac = 0;
 }
 
 void FreeBank(Bank& b)
 {
     StopBank(b);
+    b.pos = b.frac = 0;
     if (b.wavData != nullptr) {
-        s_pcmBytes -= (size_t)b.frames * b.channels * (b.bits / 8);
+        s_pcmBytes -= b.bytes;
         free(b.wavData);
     }
+    free(b.dec);
+    b.dec = nullptr;
+    b.ima = false;
+    b.bytes = 0;
+    b.decBase = b.decCount = 0;
     b.wavData = nullptr;
     b.pcm = nullptr;
     b.frames = 0;
@@ -171,6 +262,7 @@ void MixBank(Bank& b, int32_t* acc, int frames)
             } else {
                 b.playing = false;
                 b.status = 0;
+                b.pos = b.frac = 0;       // played out: the next PlaySound starts over
                 return;
             }
         }
@@ -179,8 +271,10 @@ void MixBank(Bank& b, int32_t* acc, int frames)
             uint32_t j = b.pos + 1;
             if (j >= end) j = b.loop ? begin : b.pos;
             const int32_t t = (int32_t)(b.frac >> 1);          // Q15
-            const int32_t l0 = ReadSample(b, b.pos, 0),   l1 = ReadSample(b, j, 0);
-            const int32_t r0 = ReadSample(b, b.pos, ch1), r1 = ReadSample(b, j, ch1);
+            // Both samples of frame pos first, then frame j: an IMA bank then
+            // decodes each block once, even when j is the next block's first.
+            const int32_t l0 = ReadSample(b, b.pos, 0), r0 = ReadSample(b, b.pos, ch1);
+            const int32_t l1 = ReadSample(b, j, 0),     r1 = ReadSample(b, j, ch1);
             l = l0 + (int32_t)(((int64_t)(l1 - l0) * t) >> 15);   // diff*t can exceed 2^31
             r = r0 + (int32_t)(((int64_t)(r1 - r0) * t) >> 15);
         } else {
@@ -477,8 +571,8 @@ void DirectSound::PlaySound(int bank, unsigned int slot)
     mutex_lock(&s_lock);
     Bank& b = s_banks[bank];
     if (b.active && b.pcm != nullptr && !RE1_DC_SILENT) {
-        b.pos = 0;
-        b.frac = 0;
+        // 0x0041ee60: SetCurrentPosition(0) only while the buffer is playing.
+        if (b.playing) b.pos = b.frac = 0;
         b.loop = (slot != 0);
         b.playing = true;
         b.status = 1;
@@ -531,8 +625,18 @@ int DirectSound::CreateSound(const char* wavName)
         }
         return 0;
     }
+    const bool ima = af.formatTag == 0x11;
     const int bytesPerFrame = (af.bitsPerSample / 8) * af.channels;
-    if (bytesPerFrame <= 0 || af.sampleRate <= 0) { free(af.buffer); return 0; }
+    if ((!ima && bytesPerFrame <= 0) || af.sampleRate <= 0) { free(af.buffer); return 0; }
+    int16_t* dec = nullptr;
+    if (ima) {
+        if (af.samplesPerBlock <= 0 || af.samplesPerBlock > 8192 || af.frames == 0) {
+            free(af.buffer);
+            return 0;
+        }
+        dec = (int16_t*)malloc((size_t)af.samplesPerBlock * af.channels * sizeof(int16_t));
+        if (dec == nullptr) { free(af.buffer); return 0; }
+    }
 
     mutex_lock(&s_lock);
     int bank = 0;
@@ -542,6 +646,7 @@ int DirectSound::CreateSound(const char* wavName)
     if (bank == 0) {
         mutex_unlock(&s_lock);
         free(af.buffer);
+        free(dec);
         return 0;
     }
 
@@ -549,7 +654,13 @@ int DirectSound::CreateSound(const char* wavName)
     FreeBank(b);
     b.wavData    = af.buffer;
     b.pcm        = af.pcm;
-    b.frames     = af.pcmSize / (uint32_t)bytesPerFrame;
+    b.frames     = ima ? af.frames : af.pcmSize / (uint32_t)bytesPerFrame;
+    b.bytes      = ima ? af.pcmSize : b.frames * (uint32_t)bytesPerFrame;
+    b.ima        = ima;
+    b.blockAlign = (uint16_t)af.blockAlign;
+    b.spb        = (uint16_t)af.samplesPerBlock;
+    b.dec        = dec;
+    b.decBase    = b.decCount = 0;
     b.sampleRate = af.sampleRate;
     b.channels   = af.channels;
     b.bits       = af.bitsPerSample;
@@ -564,7 +675,7 @@ int DirectSound::CreateSound(const char* wavName)
     b.loopBegin  = af.loopBegin;
     b.loopEnd    = af.loopEnd > af.loopBegin ? af.loopEnd : 0;
     b.active     = true;
-    s_pcmBytes  += (size_t)b.frames * bytesPerFrame;
+    s_pcmBytes  += b.bytes;
 
     const char* slash = strrchr(wavName, '/');
     const char* bs = strrchr(wavName, '\\');
@@ -572,14 +683,15 @@ int DirectSound::CreateSound(const char* wavName)
     strncpy(b.name, slash ? slash + 1 : wavName, sizeof(b.name) - 1);
     b.name[sizeof(b.name) - 1] = '\0';
     const size_t total = s_pcmBytes;
-    const unsigned kb = (unsigned)(((size_t)b.frames * bytesPerFrame) / 1024);
+    const unsigned kb = (unsigned)(b.bytes / 1024);
     char name[64];
     memcpy(name, b.name, sizeof(name));
     mutex_unlock(&s_lock);
 
     if (kb >= 64) {
-        printf("[AUDIO] bank %d %s: %u KB (%d Hz %d-bit %s), %u ms; banks hold %u KB\n",
-               bank, name, kb, af.sampleRate, af.bitsPerSample,
+        printf("[AUDIO] bank %d %s: %u KB (%d Hz %s %s), %u ms; banks hold %u KB\n",
+               bank, name, kb, af.sampleRate,
+               ima ? "IMA" : af.bitsPerSample == 8 ? "8-bit" : "16-bit",
                af.channels == 1 ? "mono" : "stereo",
                (unsigned)(timer_ms_gettime64() - t0), (unsigned)(total / 1024));
     }
@@ -598,7 +710,8 @@ void InitializeSoundSystem(void)
     g_pDirectSound = mgr;
     g_SoundManager = (void*)mgr;
 
-    s_outRate = AudioFile_TreeHasPs1Audio() ? 44100 : 22050;
+    // Always 22050 on the Dreamcast, PS1 audio tree or not (see the top).
+    s_outRate = 22050;
     if (RE1_DC_SILENT) {
         printf("[AUDIO] RE1_DC_SILENT build - no AICA stream\n");
         StartPollThread();          // the watchdog lives there

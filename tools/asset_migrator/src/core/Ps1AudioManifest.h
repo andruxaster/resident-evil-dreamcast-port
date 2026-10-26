@@ -78,6 +78,12 @@ inline constexpr Ps1SfxEntry kPs1Sfx[] = {
     {"CER_CRYA", "STAGE1", "ROOM1141.RDT", 4, 7648},  // same sample
     {"CER_CRYA", "STAGE1", "ROOM11A0.RDT", 4, 7648},  // same sample
     {"CER_CRYA", "STAGE1", "ROOM11A1.RDT", 4, 7648},  // same sample
+    {"CER_CRYB", "STAGE1", "ROOM1080.RDT", 8, 7648},  // prog 0 tone 8, 23361 Hz; wave 0.845 env 0.000
+    {"CER_CRYB", "STAGE1", "ROOM1081.RDT", 8, 7648},  // same sample
+    {"CER_CRYB", "STAGE1", "ROOM1140.RDT", 8, 7648},  // same sample
+    {"CER_CRYB", "STAGE1", "ROOM1141.RDT", 8, 7648},  // same sample
+    {"CER_CRYB", "STAGE1", "ROOM11A0.RDT", 8, 7648},  // same sample
+    {"CER_CRYB", "STAGE1", "ROOM11A1.RDT", 8, 7648},  // same sample
     {"CER_FOOT", "STAGE1", "ROOM1140.RDT", 9, 4736},  // prog 0 tone 13, 49501 Hz; wave 0.976 env 0.946
     {"CER_FOOT", "STAGE1", "ROOM1141.RDT", 9, 4736},  // same sample
     {"CER_FOOT", "STAGE1", "ROOM11A0.RDT", 9, 4736},  // same sample
@@ -122,11 +128,12 @@ inline constexpr Ps1SfxEntry kPs1Sfx[] = {
     {"CHRIS08", "SOUND", "CHAR03", 7, 4480},  // same sample
     {"CHRIS08", "SOUND", "CHAR04", 7, 4480},  // same sample
     {"CHRIS08", "SOUND", "CHAR05", 7, 4480},  // same sample
-    {"CHRIS09", "SOUND", "CHAR00", 10, 784},  // prog 0 tone 10, 6188 Hz; wave 0.014 env 0.976
-    {"CHRIS09", "SOUND", "CHAR02", 10, 784},  // same sample
-    {"CHRIS09", "SOUND", "CHAR03", 10, 784},  // same sample
-    {"CHRIS09", "SOUND", "CHAR04", 10, 784},  // same sample
-    {"CHRIS09", "SOUND", "CHAR05", 10, 784},  // same sample
+    {"CHRIS09", "SOUND", "CHAR00", 9, 432},  // prog 0 tone 9, 3797 Hz; wave 0.675 env 0.935
+    {"CHRIS09", "SOUND", "CHAR01", 9, 432},  // same sample
+    {"CHRIS09", "SOUND", "CHAR02", 9, 432},  // same sample
+    {"CHRIS09", "SOUND", "CHAR03", 9, 432},  // same sample
+    {"CHRIS09", "SOUND", "CHAR04", 9, 432},  // same sample
+    {"CHRIS09", "SOUND", "CHAR05", 9, 432},  // same sample
     {"CHRIS10", "SOUND", "CHAR00", 8, 3760},  // prog 0 tone 8, 11681 Hz; wave 0.817 env 0.913
     {"CHRIS10", "SOUND", "CHAR01", 8, 3760},  // same sample
     {"CHRIS10", "SOUND", "CHAR02", 8, 3760},  // same sample
@@ -255,6 +262,8 @@ inline constexpr Ps1SfxEntry kPs1Sfx[] = {
     {"ELV_ON", "STAGE5", "ROOM50C1.RDT", 25, 31584},  // same sample
     {"EMBLEMA", "STAGE1", "ROOM10F0.RDT", 26, 7008},  // prog 1 tone 3, 20812 Hz; wave 0.937 env 0.721
     {"EMBLEMA", "STAGE1", "ROOM10F1.RDT", 26, 7008},  // same sample
+    {"EMBLEMB", "STAGE1", "ROOM10F0.RDT", 27, 7008},  // prog 1 tone 5, 17501 Hz; wave 0.822 env 0.000
+    {"EMBLEMB", "STAGE1", "ROOM10F1.RDT", 27, 7008},  // same sample
     {"ENDING06", "SOUND", "ENDING", 2, 166400},  // prog 0 tone 7, 44100 Hz; wave 0.992 env 0.986
     {"ESCELV", "STAGE5", "ROOM50D0.RDT", 23, 126784},  // prog 0 tone 4, 22050 Hz; wave 0.986 env 0.995
     {"ESCELV", "STAGE5", "ROOM50D1.RDT", 23, 126784},  // same sample
@@ -357,6 +366,12 @@ inline constexpr Ps1SfxEntry kPs1Sfx[] = {
     {"FT_CONCA", "STAGE3", "ROOM3021.RDT", 42, 5680},  // same sample
     {"FT_CONCA", "STAGE3", "ROOM3030.RDT", 45, 5680},  // same sample
     {"FT_CONCA", "STAGE3", "ROOM3031.RDT", 45, 5680},  // same sample
+    {"FT_CONCB", "STAGE3", "ROOM3010.RDT", 43, 5680},  // prog 0 tone 5, 24750 Hz; wave 0.965 env 0.000
+    {"FT_CONCB", "STAGE3", "ROOM3011.RDT", 43, 5680},  // same sample
+    {"FT_CONCB", "STAGE3", "ROOM3020.RDT", 43, 5680},  // same sample
+    {"FT_CONCB", "STAGE3", "ROOM3021.RDT", 43, 5680},  // same sample
+    {"FT_CONCB", "STAGE3", "ROOM3030.RDT", 46, 5680},  // same sample
+    {"FT_CONCB", "STAGE3", "ROOM3031.RDT", 46, 5680},  // same sample
     {"FT_CPA", "STAGE1", "ROOM1020.RDT", 45, 4432},  // prog 0 tone 0, 22050 Hz; wave 0.996 env 0.994
     {"FT_CPA", "STAGE1", "ROOM1021.RDT", 45, 4432},  // same sample
     {"FT_CPA", "STAGE1", "ROOM1080.RDT", 45, 4432},  // same sample
@@ -762,6 +777,12 @@ inline constexpr Ps1SfxEntry kPs1Sfx[] = {
     {"LADDER01", "SOUND", "DOORLAD", 0, 12944},  // prog 0 tone 0, 44100 Hz; wave 0.971 env 0.985
     {"LOCKOUT", "STAGE1", "ROOM11A0.RDT", 24, 23056},  // prog 0 tone 15, 30378 Hz; wave 0.745 env 0.993
     {"LOCKOUT", "STAGE1", "ROOM11A1.RDT", 24, 23056},  // same sample
+    {"LOCKOUTA", "STAGE3", "ROOM3080.RDT", 24, 14816},  // prog 1 tone 2, 19111 Hz; wave 0.843 env 0.000
+    {"LOCKOUTA", "STAGE3", "ROOM3081.RDT", 24, 14816},  // same sample
+    {"LOCKOUTA", "STAGE3", "ROOM30B0.RDT", 24, 14816},  // same sample
+    {"LOCKOUTA", "STAGE3", "ROOM30B1.RDT", 24, 14816},  // same sample
+    {"LOCKOUTA", "STAGE3", "ROOM30D0.RDT", 24, 14816},  // same sample
+    {"LOCKOUTA", "STAGE3", "ROOM30D1.RDT", 24, 14816},  // same sample
     {"LOCKOUTB", "STAGE3", "ROOM3080.RDT", 25, 14816},  // prog 1 tone 3, 22727 Hz; wave 0.874 env 0.993
     {"LOCKOUTB", "STAGE3", "ROOM3081.RDT", 25, 14816},  // same sample
     {"LOCKOUTB", "STAGE3", "ROOM30B0.RDT", 25, 14816},  // same sample
@@ -1337,6 +1358,10 @@ inline constexpr Ps1SfxEntry kPs1Sfx[] = {
     {"Z_NISI2", "STAGE5", "ROOM5051.RDT", 4, 12464},  // same sample
     {"Z_NISI2", "STAGE5", "ROOM5090.RDT", 4, 12464},  // same sample
     {"Z_NISI2", "STAGE5", "ROOM5091.RDT", 4, 12464},  // same sample
+    {"Z_NISI3", "STAGE5", "ROOM5050.RDT", 9, 12704},  // prog 0 tone 15, 5203 Hz; wave 0.853 env 0.000
+    {"Z_NISI3", "STAGE5", "ROOM5051.RDT", 9, 12704},  // same sample
+    {"Z_NISI3", "STAGE5", "ROOM5090.RDT", 9, 12704},  // same sample
+    {"Z_NISI3", "STAGE5", "ROOM5091.RDT", 9, 12704},  // same sample
     {"Z_OSOU", "STAGE1", "ROOM1090.RDT", 4, 6704},  // prog 0 tone 4, 11477 Hz; wave 0.945 env 0.995
     {"Z_OSOU", "STAGE1", "ROOM1091.RDT", 4, 6704},  // same sample
     {"Z_OSOU", "STAGE1", "ROOM10E0.RDT", 4, 6704},  // same sample

@@ -403,10 +403,18 @@ unsigned char apply_weapon_damage(unsigned int weapon_id)
         // 0x40000 bit -> 0x8008B59A, (bits & 0x30000) == 0x20000 ->
         // 0x8008BEFA, else the base column - so ADVANCED* reads the base
         // column, exactly as the difficulty byte does here).
+        //
+        // Port: that base column IS the PC's first-playthrough damage (200 of
+        // 200 records), so Western difficulty (Globals.h, never in TRAINING)
+        // swaps it for the second-playthrough damage - the PS1 USA table.
+        // ADVANCED keeps its own column. The hit states are equal in all of
+        // them.
         if (g_DcDifficulty == DC_DIFFICULTY_TRAINING) {
             damage = g_dcWeaponDamageTraining[tableIdx];
         } else if (g_DcDifficulty == DC_DIFFICULTY_ADVANCED) {
             damage = g_dcWeaponDamageAdvanced[tableIdx];
+        } else if (western_difficulty()) {
+            damage = g_weaponHitRecordsSecondRun[tableIdx].dmg;
         } else {
             damage = rec->dmg;              // STANDARD and ADVANCED* share this column
         }
@@ -1184,6 +1192,25 @@ static void enemy_hit_reaction_zombie(Entity* enemy)
              || ((g_scaled_down_dist == 3 || g_scaled_down_dist == 4)
                  && (g_playerEntityPointer.flags & 0x40) != 0))
             && !dcHeadExplodeSuppressed) {
+
+            // Sega Saturn: Zombie Wesker keeps his head. GAME5's reaction
+            // (0x0604AE5A) tests `(entity word & 0x00FF0F00) == 0x00010900` -
+            // id 1, the naked zombie, with behaviour 9, which is only ever the
+            // Battle Game's arena-12 Wesker - before the kill; on a match it
+            // flashes five joints (0, 1, 2, 9, 12 - offsets 0/0xA4/0x148/0x5C4/
+            // 0x7B0 in the Saturn's 0xA4-byte joints) and jumps straight to the
+            // hit billboards (0x0604AFF0), skipping the aim-height offset and
+            // Jill's handgun chip below. He takes the shot's ordinary damage.
+            if (g_bSaturnMode && enemy->id == ENEMY_ZOMBIE_NAKED &&
+                (enemy->behavior_flags & 0x0F) == 9) {
+                static const unsigned char kFlash[5] = { 0, 1, 2, 9, 12 };
+                for (int i = 0; i < 5; i++) {
+                    JointApplyColorTint(&enemy->jointsStructs[kFlash[i]], 0x30, 0x80820,
+                                        (void*)0x00606060);
+                }
+                goto hit_billboards;
+            }
+            
             enemy->health = -300;    // instant kill
             // 0x0043d0c5-0x0043d10c: the original swaps ENTITY to the hit enemy
             // for these three calls and restores it before the billboards.
@@ -1232,6 +1259,7 @@ static void enemy_hit_reaction_zombie(Entity* enemy)
         }
     }
 
+hit_billboards:
     if (g_collPushDepthZHi == 4) {
         if (g_playerDisplacement < 9000) {
             for (unsigned int i = 4; i != 0; i--) {

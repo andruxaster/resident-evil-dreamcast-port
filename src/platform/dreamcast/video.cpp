@@ -738,6 +738,35 @@ BOOL plat_video_open_and_play(const char* path, int playToMs)
     return TRUE;
 }
 
+// MERGE140: length of a movie without playing it. VideoPlayback.cpp picks the
+// prologue's Jill cut from it (the DC / censored prologue is ~16 s shorter
+// than the PC one); 0 would mean "PC cut". Read from the AVI main header:
+// dwMicroSecPerFrame * dwTotalFrames, in the first sectors of the file.
+int plat_video_probe_duration_ms(const char* path)
+{
+    char norm[512];
+    const char* p = plat_normalize_path(path, norm, sizeof(norm));
+    uint32_t lba = 0, size = 0;
+    if (dc_iso_locate(p, &lba, &size) != 0 || size < 64) return 0;
+    const uint32_t len = 4096;
+    uint8_t* buf = (uint8_t*)memalign(32, len);
+    if (buf == nullptr) return 0;
+    int ms = 0;
+    if (dc_iso_read(lba, 0, len, buf) == 0 && RL32(buf) == FCC("RIFF") && RL32(buf + 8) == FCC("AVI ")) {
+        const uint32_t end = (size < len ? size : len) - 8 - 20;
+        for (uint32_t i = 12; i < end; i += 2) {
+            if (RL32(buf + i) != FCC("avih")) continue;
+            const uint32_t usPerFrame = RL32(buf + i + 8);
+            const uint32_t frames     = RL32(buf + i + 8 + 16);
+            ms = (int)(((uint64_t)usPerFrame * frames) / 1000u);
+            break;
+        }
+    }
+    free(buf);
+    printf("[VIDEO] %s: %d ms\n", p, ms);
+    return ms;
+}
+
 void plat_video_play_from(int fromMs)
 {
     if (!s_open) return;

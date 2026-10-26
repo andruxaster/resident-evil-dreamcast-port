@@ -15,6 +15,7 @@
 // ============================================================================
 #include "EntityCommon.h"
 #include "../../Globals.h"
+#include "../saturn/SaturnTyrant.h"     // saturn_capsule_collision
 #include <cstring>
 
 // Plant 42 boss update (0x00464d10).
@@ -996,19 +997,44 @@ unsigned char FUN_0048ae00(MATRIX* jointMtx, VECTOR* pos, short radius, int* pla
 }
 
 // ============================================================================
-// Zone-graph pathfinding scratch (0x00be0ee0-0x00be0f03), used by zone_path_find
-// and the two walkers below. One contiguous block in the original, with the
-// byte arrays overlapping by one byte (0xbe0ee0[i] also reads as
-// 0xbe0edf[i+1], which the walkers use to reach the previous step's zone);
-// the port spells that out as explicit [i-1] indices instead. Sizes match the
-// original block, except the short pairs which are grown from the original
-// two steps so longer paths do not run off the end.
+// Zone-graph pathfinding scratch, used by zone_path_find and the two walkers
+// below. Three arrays, and the walkers address each of them at two bases:
+//
+//   0x00be0ee0  g_zonePathIdx[i]   - the zone at depth i of the current walk.
+//   0x00be0ee1  ...                - the SAME array one entry on: idx[i+1] is
+//                                    the scan cursor of depth i (the last
+//                                    neighbour of idx[i] tried), seeded 0xFF
+//                                    (cw) / zone count (ccw) whenever depth i
+//                                    is entered, and set to the target on a
+//                                    goal hit. 0x00be0edf[s] is idx[s-1].
+//   0x00be0ef0  g_zonePathBest[n]  - the best path found so far.
+//   0x00be0efc  g_zonePathPt[k]    - X/Z short pairs, stride 4. 0x00be0efc +
+//                                    4i reads P(i) and 0x00be0f00 + 4i reads
+//                                    P(i+1): P(i+1) is where the walk entered
+//                                    the zone at depth i (P(1) = the entity).
+//
+// The two bases are one array each - a scan cursor IS the next depth's zone,
+// and a "previous point" IS the next depth's "step point". Split into separate
+// arrays (as an earlier port had them) the cursor of a depth no longer becomes
+// the zone it is extended into, the scan starts from a stale value, and the
+// walk either loops for ever or cannot reach any lower-numbered neighbour - so
+// a chaser in a zone whose only way out is downwards found no path at all
+// (the Saturn's second lab Tyrant, from zone 12, circled a stale waypoint).
+// GAME4 0x06062810 (the Saturn's cw walker) is the same code with the cursor
+// written explicitly as idx[i+1], which confirms the reading.
+//
+// Sizes: the original block holds idx[16] / best[12] / P[...] back to back, so
+// a 16-deep walk would write idx[16] into best[0] and P past the block. A path
+// never repeats a zone, so its depth is bounded by the room's zone count (at
+// most 16, the adjacency mask is a u16); the arrays below are sized for that
+// without leaning on what follows them. Modelled over every USA room's raw
+// bytes (every zone pair plus the 0xFF "outside every zone" start and target,
+// both directions: 19,968 walks) the original walk always terminates, at most
+// 14 deep.
 // ============================================================================
-unsigned char g_zonePathIdx[0x10] = {};    // 0x00be0ee0 - zones on the current walk
-unsigned char g_zonePathDir[0x10] = {};    // 0x00be0ee1 - per-step scan bound
-unsigned char g_zonePathBest[0x0C] = {};   // 0x00be0ef0 - best-path zones
-short         g_zonePathStep[16][2] = {};  // 0x00be0efc - per-step walk X/Z (stride 4)
-short         g_zonePathPrev[16][2] = {};  // 0x00be0f00 - per-step previous-position X/Z
+unsigned char g_zonePathIdx[0x20] = {};    // 0x00be0ee0 - zones on the walk (+1: scan cursors)
+unsigned char g_zonePathBest[0x20] = {};   // 0x00be0ef0 - best-path zones
+short         g_zonePathPt[0x20][2] = {};  // 0x00be0efc - P(k): X/Z where depth k-1 was entered
 
 // ============================================================================
 // walk_zone_find (0x00460230)
@@ -1083,307 +1109,141 @@ unsigned char walk_zone_shared_edge(unsigned int zoneA, unsigned int zoneB)
 
 // ============================================================================
 // zone_walk_ccw (0x0045fdb0) / zone_walk_cw (0x0045fae0)
-// The two zone-graph walks behind zone_path_find. Starting from
-// g_zonePathIdx[0] (the entity's zone, set by the caller), each probes
-// adjacent zones - descending (ccw) or ascending (cw) index order - until the
-// target's zone is reached, keeping the shortest total path in
-// g_zonePathBest. `zoneStart` is unused inside both: the state comes entirely
-// from the scratch arrays, exactly like the original. Returns the first
-// step's zone index, or 0xFF when no path exists.
+// The two zone-graph walks behind zone_path_find: a depth-first search from
+// g_zonePathIdx[0] (the entity's zone, set by the caller) to `zoneTarget`,
+// keeping the shortest total path (edge midpoint to edge midpoint, then to
+// the target point) in g_zonePathBest. Returns the first step's zone, or
+// 0xFF when no path exists. `zoneStart` is unused inside both: the state comes
+// entirely from the scratch arrays, exactly like the original.
 //
-// The original's candidate scans were not monotone: `1 << (z & 0x1f)` aliases
-// zone indices past the table (z = 34, 224+b, ...), and the byte wrap let a
-// backtrack re-probe a candidate it had already consumed - which reads the
-// RDT data past the zone table and, with the port's different memory layout,
-// loops forever (a zombie chase froze on ROOM1010/1030/1050/...). The scans
-// here are bounded to the valid zone range 0..count-1 and never wrap, so each
-// position's candidates are consumed monotonically and the walk terminates;
-// the CCW walk additionally marks fresh positions (g_zonePathIdx = count) so
-// its descending scan starts at the top of the range instead of wrapping.
-//
-// THE GOAL-STEP ALIASING (fixed 2026-08-11): the original's scratch arrays
-// overlap - idx[1] IS dir[0] - so when the target is directly adjacent to the
-// start zone (goal at step 0), the goal branch's `best[1] = idx[1]` reads the
-// target zone the branch just wrote into dir[0]. The split arrays lost that
-// and returned a STALE leftover from the previous walk as the first step; the
-// follow-the-player behaviours then steered at a point from an old path and
-// zigzagged between zones. The record loop now spells the aliasing out
-// (best[step+1] = zoneTarget). Verified with tools/sim_zone_walk.py, which
-// previously compared the original model against a HARDCODED start zone 0 -
-// that is fixed too, and the original now agrees with the port on every
-// direct-adjacency pair in every shipped RDT. The remaining divergences are
-// the long-way-around-ring cases, where the original's wrapping scan finds a
-// shorter route through zones past the table; the bounded scan returns a
-// longer valid path or 0xFF (the caller falls back to the direct heading) -
-// both still reach the target zone.
+// The two functions are one body with three differences, so the port keeps
+// one body (zone_walk) and the two original entry points:
+//   - cw tries a zone's neighbours in ascending order (cursor seeded 0xFF, so
+//     the first probe is 0x00), ccw in descending order (seeded `count`);
+//   - the "anything left to try" mask is the bits ABOVE the cursor for cw,
+//     BELOW it for ccw;
+//   - the cursor seed written when a depth is entered.
+// The scan cannot run away: it only starts when the mask shows an untried
+// neighbour on its side of the cursor, and the cursor of a fresh depth is
+// always seeded before it is read (by zone_path_find for depth 0, by the
+// advance below for every deeper one). See the scratch note above.
 // ============================================================================
-static unsigned char zone_walk_ccw(unsigned int zoneStart, unsigned char zoneTarget,
-                                   short targetX, short targetZ)
+static unsigned char zone_walk(unsigned char zoneTarget, short targetX, short targetZ,
+                               int cw)
 {
     unsigned char* zoneBase = g_RdtPointer->walk_zones;
-    unsigned char count = *zoneBase;
+    const unsigned char seed = cw ? (unsigned char)0xFF : *zoneBase;
+    const unsigned int targetBit = 1u << (zoneTarget & 0x1F);
 
-    // Fresh-position marker: every position 1..15 starts as "never probed"
-    // (an invalid zone index). The original relied on the 0 -> 255 byte wrap
-    // of its candidate scan here, which aliased into zone indices past the
-    // table and walked off it; the marker gives the descending scan a clean
-    // top (count-1) to start from and a clean exhaustion test, so a
-    // backtrack can never re-probe a consumed candidate.
-    for (int k = 1; k < 0x10; k++) g_zonePathIdx[k] = count;
+    unsigned char* idx = g_zonePathIdx;
+    short (*pt)[2] = g_zonePathPt;
 
-    int step = 0;
+    // |P(a) - P(b)| and |P(a) - edge|, the original's IMUL/IMUL/ADD -> SquareRoot0.
+    #define ZW_DIST(ax, az, bx, bz) \
+        (unsigned int)SquareRoot0(((int)(ax) - (int)(bx)) * ((int)(ax) - (int)(bx)) + \
+                                  ((int)(az) - (int)(bz)) * ((int)(az) - (int)(bz)))
+
+    signed char step = 0;
     unsigned int best = 0xFFFFFFFF;
     unsigned int dist = 0;
 
     for (;;) {
-        int i = step;
+        const int i = step;
 
         // The zone's adjacency bitmask (record +10, verified against the RDTs).
-        unsigned short flags = *(unsigned short*)(zoneBase + 0xC
-                                + (unsigned int)g_zonePathIdx[i] * 0xC);
+        const unsigned short flags = *(unsigned short*)(zoneBase + 0xC
+                                     + (unsigned int)idx[i] * 0xC);
 
-        if ((flags & (1u << (zoneTarget & 0x1F))) == 0) {
-            // ---- target not adjacent: extend the walk ----
-            if ((flags & ((1u << (g_zonePathDir[i] & 0x1F)) - 1u)) == 0) {
-                // Dead end: no untried flag bits below the scan bound.
-                if (i != 0) {
-                    int dz = (int)g_zonePathStep[i][1] - (int)g_zonePathPrev[i][1];
-                    int dx = (int)g_zonePathStep[i][0] - (int)g_zonePathPrev[i][0];
-                    dist -= (unsigned int)SquareRoot0(dz * dz + dx * dx);
-                }
-                goto backtrack;
-            }
-
-            int newLen = step + 1;
-            if (newLen >= 0x10) {
-                // Longer than the scratch arrays hold: keep the best so far.
-                if (best == 0xFFFFFFFF) return 0xFF;
-                return g_zonePathBest[1];
-            }
-            step = newLen;   // the original folds this into the scan-loop condition
-
-            // Monotone descending scan of the valid zones 0..count-1: each
-            // probe is idx-1, and a probe that leaves the range means every
-            // candidate at this position has been tried. The scan never
-            // wraps, so a backtrack cannot re-probe a consumed candidate
-            // (the original's 0 -> 255 wrap did exactly that and cycled).
-            unsigned char zone = 0;
-            int matched = 0;
-            for (;;) {
-                zone = (unsigned char)(g_zonePathIdx[newLen] - 1);
-                if (zone >= count) break;      // past the last valid zone
-                unsigned int bit = 1u << (zone & 0x1F);
-                g_zonePathIdx[newLen] = zone;
-                if (flags & bit) { matched = 1; break; }
-            }
-            if (!matched) {
-                // Exhausted: no candidate at this step. Dead end - backtrack
-                // past it (step = newLen-1 is the step whose extension failed).
-                if (i != 0) {
-                    int dz = (int)g_zonePathStep[i][1] - (int)g_zonePathPrev[i][1];
-                    int dx = (int)g_zonePathStep[i][0] - (int)g_zonePathPrev[i][0];
-                    dist -= (unsigned int)SquareRoot0(dz * dz + dx * dx);
-                }
-                step = newLen - 2;
-                goto exit_check;
-            }
-
-            // A zone already on the path: truncate there instead of looping.
-            for (int back = step - 1; back >= 0; back--) {
-                if (g_zonePathIdx[back] == zone) goto backtrack;
-            }
-
-            walk_zone_shared_edge(g_zonePathIdx[newLen], g_zonePathIdx[newLen - 1]);
-            dist += (unsigned int)SquareRoot0(
-                (g_zonePathStep[newLen][0] - g_playerDisplacement) * (g_zonePathStep[newLen][0] - g_playerDisplacement) +
-                (g_zonePathStep[newLen][1] - player_distance_z) * (g_zonePathStep[newLen][1] - player_distance_z));
-            if (best <= dist) {
-                dist -= (unsigned int)SquareRoot0(
-                    (g_zonePathStep[newLen][0] - g_playerDisplacement) * (g_zonePathStep[newLen][0] - g_playerDisplacement) +
-                    (g_zonePathStep[newLen][1] - player_distance_z) * (g_zonePathStep[newLen][1] - player_distance_z));
-                goto backtrack;
-            }
-
-            g_zonePathPrev[newLen][0] = (short)g_playerDisplacement;
-            g_zonePathPrev[newLen][1] = (short)player_distance_z;
-            g_zonePathDir[newLen] = count;
-            continue;   // walk advanced - no backtrack this frame
-        }
-
-        // ---- target adjacent: goal step ----
-        g_zonePathDir[i] = zoneTarget;
-        walk_zone_shared_edge(g_zonePathIdx[i], zoneTarget);
-        dist += (unsigned int)SquareRoot0(
-            (g_zonePathPrev[i][1] - player_distance_z) * (g_zonePathPrev[i][1] - player_distance_z) +
-            (g_zonePathPrev[i][0] - g_playerDisplacement) * (g_zonePathPrev[i][0] - g_playerDisplacement));
-        dist += (unsigned int)SquareRoot0(
-            (player_distance_z - targetZ) * (player_distance_z - targetZ) +
-            (g_playerDisplacement - targetX) * (g_playerDisplacement - targetX));
-        if (dist < best) {
-            int n = step + 1;
-            do {
-                // The original's scratch arrays overlap: idx[n] aliases
-                // dir[n-1], and the goal write above just set dir[i] to
-                // zoneTarget - so best[step+1] comes out as the target zone
-                // itself. Once the arrays were split, reading g_zonePathIdx[n]
-                // here returned a STALE leftover from the previous walk - the
-                // walker then steered at a point from an old path, and the
-                // follow behaviours zigzagged. Spell the aliasing out.
-                g_zonePathBest[n] = (n == step + 1) ? zoneTarget : g_zonePathIdx[n];
+        if ((flags & targetBit) != 0) {
+            // ---- the target is a neighbour: record the path if shorter ----
+            idx[i + 1] = zoneTarget;
+            walk_zone_shared_edge(idx[i], zoneTarget);
+            dist += ZW_DIST(pt[i + 1][0], pt[i + 1][1], g_playerDisplacement, player_distance_z);
+            dist += ZW_DIST(g_playerDisplacement, player_distance_z, targetX, targetZ);
+            if (dist < best) {
                 best = dist;
-                n--;
-            } while (n != 0);
-        }
-        if (step != 0) {
-            dist -= (unsigned int)SquareRoot0(
-                (player_distance_z - targetZ) * (player_distance_z - targetZ) +
-                (g_playerDisplacement - targetX) * (g_playerDisplacement - targetX));
-            dist -= (unsigned int)SquareRoot0(
-                (g_zonePathPrev[i][1] - player_distance_z) * (g_zonePathPrev[i][1] - player_distance_z) +
-                (g_zonePathPrev[i][0] - g_playerDisplacement) * (g_zonePathPrev[i][0] - g_playerDisplacement));
-            int dz = (int)g_zonePathStep[i][1] - (int)g_zonePathPrev[i][1];
-            int dx = (int)g_zonePathStep[i][0] - (int)g_zonePathPrev[i][0];
-            dist -= (unsigned int)SquareRoot0(dz * dz + dx * dx);
+                // best[step+1..1] = idx[step+1..1]; idx[step+1] is the target.
+                signed char n = (signed char)(step + 1);
+                do {
+                    g_zonePathBest[n] = idx[n];
+                    n--;
+                } while (n != 0);
+            }
+            if (step != 0) {
+                dist -= ZW_DIST(g_playerDisplacement, player_distance_z, targetX, targetZ);
+                dist -= ZW_DIST(pt[i + 1][0], pt[i + 1][1], g_playerDisplacement, player_distance_z);
+                dist -= ZW_DIST(pt[i][0], pt[i][1], pt[i + 1][0], pt[i + 1][1]);
+            }
+        } else {
+            // ---- anything left to try past this depth's cursor? ----
+            // cw: CL = cursor + 1 is a BYTE add, so the 0xFF seed gives a
+            // shift of 0 and the whole mask. The shift counts are masked to 5
+            // bits by SHL.
+            const unsigned int mask = cw
+                ? ~((1u << ((unsigned char)(idx[i + 1] + 1) & 0x1F)) - 1u)
+                : ((1u << (idx[i + 1] & 0x1F)) - 1u);
+
+            if ((flags & mask) == 0) {
+                // Dead end: give back the leg into this depth.
+                if (step != 0) dist -= ZW_DIST(pt[i][0], pt[i][1], pt[i + 1][0], pt[i + 1][1]);
+            } else if (step + 2 >= (int)sizeof(g_zonePathIdx)) {
+                // Port-only: deeper than the scratch arrays. Unreachable for a
+                // zone graph (see above); treated as a dead end, not an overrun.
+                if (step != 0) dist -= ZW_DIST(pt[i][0], pt[i][1], pt[i + 1][0], pt[i + 1][1]);
+            } else {
+                // Extend: advance this depth's cursor (which is idx[step+1])
+                // to the next neighbour on its side.
+                step++;
+                const int s = step;
+                unsigned char zone;
+                do {
+                    zone = (unsigned char)(cw ? idx[s] + 1 : idx[s] - 1);
+                    idx[s] = zone;
+                } while ((flags & (1u << (zone & 0x1F))) == 0);
+
+                // A zone already on the path (depth s-2 down to 0): reject it
+                // and come back to this depth with the cursor moved on.
+                bool onPath = false;
+                for (signed char b = (signed char)(s - 2); b >= 0; b--) {
+                    if (idx[b] == zone) { onPath = true; break; }
+                }
+                if (!onPath) {
+                    walk_zone_shared_edge(idx[s], idx[s - 1]);
+                    dist += ZW_DIST(pt[s][0], pt[s][1], g_playerDisplacement, player_distance_z);
+                    if (dist < best) {
+                        // Enter depth s: its entry point and a fresh cursor.
+                        pt[s + 1][0] = (short)g_playerDisplacement;
+                        pt[s + 1][1] = (short)player_distance_z;
+                        idx[s + 1] = seed;
+                        continue;           // no step-- this round
+                    }
+                    // Already no shorter than the best: prune.
+                    dist -= ZW_DIST(pt[s][0], pt[s][1], g_playerDisplacement, player_distance_z);
+                }
+            }
         }
 
-backtrack:
         step--;
-exit_check:
         if (step < 0) {
             if (best == 0xFFFFFFFF) return 0xFF;
             return g_zonePathBest[1];
         }
     }
+    #undef ZW_DIST
+}
+
+static unsigned char zone_walk_ccw(unsigned int zoneStart, unsigned char zoneTarget,
+                                   short targetX, short targetZ)
+{
+    (void)zoneStart;
+    return zone_walk(zoneTarget, targetX, targetZ, 0);
 }
 
 static unsigned char zone_walk_cw(unsigned int zoneStart, unsigned char zoneTarget,
                                   short targetX, short targetZ)
 {
-    unsigned char* zoneBase = g_RdtPointer->walk_zones;
-    unsigned char count = *zoneBase;
-
-    int step = 0;
-    unsigned int best = 0xFFFFFFFF;
-    unsigned int dist = 0;
-
-    for (;;) {
-        int i = step;
-
-        unsigned short flags = *(unsigned short*)(zoneBase + 0xC
-                                + (unsigned int)g_zonePathIdx[i] * 0xC);
-
-        if ((flags & (1u << (zoneTarget & 0x1F))) == 0) {
-            // ---- target not adjacent: extend the walk ----
-            if ((flags & ~((1u << ((g_zonePathDir[i] + 1) & 0x1F)) - 1u)) == 0) {
-                // Dead end: no untried flag bits above the scan bound.
-                if (i != 0) {
-                    int dz = (int)g_zonePathStep[i][1] - (int)g_zonePathPrev[i][1];
-                    int dx = (int)g_zonePathStep[i][0] - (int)g_zonePathPrev[i][0];
-                    dist -= (unsigned int)SquareRoot0(dz * dz + dx * dx);
-                }
-                goto backtrack;
-            }
-
-            int newLen = step + 1;
-            if (newLen >= 0x10) {
-                // Longer than the scratch arrays hold: keep the best so far.
-                if (best == 0xFFFFFFFF) return 0xFF;
-                return g_zonePathBest[1];
-            }
-            step = newLen;
-
-            // Monotone ascending scan of the valid zones: each probe is
-            // idx+1 (a fresh position starts at 1, so zone 0 is skipped like
-            // the original's scan), and a probe that leaves 0..count-1 means
-            // every candidate here has been tried. The scan never wraps, so a
-            // backtrack cannot re-probe a consumed candidate.
-            unsigned char zone = 0;
-            int matched = 0;
-            for (;;) {
-                zone = (unsigned char)(g_zonePathIdx[newLen] + 1);
-                if (zone >= count) break;      // past the last valid zone
-                unsigned int bit = 1u << (zone & 0x1F);
-                g_zonePathIdx[newLen] = zone;
-                if (flags & bit) { matched = 1; break; }
-            }
-            if (!matched) {
-                // Exhausted: no candidate at this step. Dead end - backtrack
-                // past it (step = newLen-1 is the step whose extension failed).
-                if (i != 0) {
-                    int dz = (int)g_zonePathStep[i][1] - (int)g_zonePathPrev[i][1];
-                    int dx = (int)g_zonePathStep[i][0] - (int)g_zonePathPrev[i][0];
-                    dist -= (unsigned int)SquareRoot0(dz * dz + dx * dx);
-                }
-                step = newLen - 2;
-                goto exit_check;
-            }
-
-            // A zone already on the path: truncate there instead of looping.
-            for (int back = step - 1; back >= 0; back--) {
-                if (g_zonePathIdx[back] == zone) goto backtrack;
-            }
-
-            walk_zone_shared_edge(g_zonePathIdx[newLen], g_zonePathIdx[newLen - 1]);
-            dist += (unsigned int)SquareRoot0(
-                (g_zonePathStep[newLen][1] - player_distance_z) * (g_zonePathStep[newLen][1] - player_distance_z) +
-                (g_zonePathStep[newLen][0] - g_playerDisplacement) * (g_zonePathStep[newLen][0] - g_playerDisplacement));
-            if (best <= dist) {
-                dist -= (unsigned int)SquareRoot0(
-                    (g_zonePathStep[newLen][1] - player_distance_z) * (g_zonePathStep[newLen][1] - player_distance_z) +
-                    (g_zonePathStep[newLen][0] - g_playerDisplacement) * (g_zonePathStep[newLen][0] - g_playerDisplacement));
-                goto backtrack;
-            }
-
-            g_zonePathStep[newLen][0] = (short)g_playerDisplacement;
-            g_zonePathStep[newLen][1] = (short)player_distance_z;
-            g_zonePathDir[newLen] = 0xFF;
-            continue;
-        }
-
-        // ---- target adjacent: goal step ----
-        g_zonePathDir[i] = zoneTarget;
-        walk_zone_shared_edge(g_zonePathIdx[i], zoneTarget);
-        dist += (unsigned int)SquareRoot0(
-            (g_zonePathPrev[i][1] - player_distance_z) * (g_zonePathPrev[i][1] - player_distance_z) +
-            (g_zonePathPrev[i][0] - g_playerDisplacement) * (g_zonePathPrev[i][0] - g_playerDisplacement));
-        dist += (unsigned int)SquareRoot0(
-            (player_distance_z - targetZ) * (player_distance_z - targetZ) +
-            (g_playerDisplacement - targetX) * (g_playerDisplacement - targetX));
-        if (dist < best) {
-            int n = step + 1;
-            do {
-                // The original's scratch arrays overlap: idx[n] aliases
-                // dir[n-1], and the goal write above just set dir[i] to
-                // zoneTarget - so best[step+1] comes out as the target zone
-                // itself. Once the arrays were split, reading g_zonePathIdx[n]
-                // here returned a STALE leftover from the previous walk - the
-                // walker then steered at a point from an old path, and the
-                // follow behaviours zigzagged. Spell the aliasing out.
-                g_zonePathBest[n] = (n == step + 1) ? zoneTarget : g_zonePathIdx[n];
-                best = dist;
-                n--;
-            } while (n != 0);
-        }
-        if (step != 0) {
-            dist -= (unsigned int)SquareRoot0(
-                (player_distance_z - targetZ) * (player_distance_z - targetZ) +
-                (g_playerDisplacement - targetX) * (g_playerDisplacement - targetX));
-            dist -= (unsigned int)SquareRoot0(
-                (g_zonePathPrev[i][1] - player_distance_z) * (g_zonePathPrev[i][1] - player_distance_z) +
-                (g_zonePathPrev[i][0] - g_playerDisplacement) * (g_zonePathPrev[i][0] - g_playerDisplacement));
-            int dz = (int)g_zonePathStep[i][1] - (int)g_zonePathPrev[i][1];
-            int dx = (int)g_zonePathStep[i][0] - (int)g_zonePathPrev[i][0];
-            dist -= (unsigned int)SquareRoot0(dz * dz + dx * dx);
-        }
-
-backtrack:
-        step--;
-exit_check:
-        if (step < 0) {
-            if (best == 0xFFFFFFFF) return 0xFF;
-            return g_zonePathBest[1];
-        }
-    }
+    (void)zoneStart;
+    return zone_walk(zoneTarget, targetX, targetZ, 1);
 }
 
 // ============================================================================
@@ -1423,14 +1283,17 @@ unsigned char zone_path_find(int pos1_x, int pos1_z, int* pos2_x, int* pos2_z)
     }
 
     // Direction of the graph walk: the shortest way around the zone ring.
-    g_zonePathDir[0] = count;
+    // idx[1] is depth 0's scan cursor (see the scratch note): `count` for ccw,
+    // 0xFF for cw below.
+    g_zonePathIdx[1] = count;
     int delta = (int)targetZone - (int)startZone;
     if (delta < 0) delta += (int)count;
     char dir = (char)(((count >> 1) < delta) * 2 - 1);
     if (startZone == 0) dir = (char)(~dir + 1);
 
-    g_zonePathPrev[0][0] = (short)ENTITY->scaMatrixData.localMatrix.t[0];
-    g_zonePathPrev[0][1] = (short)ENTITY->scaMatrixData.localMatrix.t[2];
+    // P(1) (0x00be0f00): where the walk "entered" depth 0 - the entity itself.
+    g_zonePathPt[1][0] = (short)ENTITY->scaMatrixData.localMatrix.t[0];
+    g_zonePathPt[1][1] = (short)ENTITY->scaMatrixData.localMatrix.t[2];
     g_zonePathIdx[0] = startZone;
     g_zonePathBest[0] = startZone;
 
@@ -1438,7 +1301,7 @@ unsigned char zone_path_find(int pos1_x, int pos1_z, int* pos2_x, int* pos2_z)
     if (dir < 1) {
         firstStep = zone_walk_ccw(startZone, targetZone, (short)pos1_x, (short)targetZ);
     } else {
-        g_zonePathDir[0] = 0xFF;
+        g_zonePathIdx[1] = 0xFF;
         firstStep = zone_walk_cw(startZone, targetZone, (short)pos1_x, (short)targetZ);
     }
     if (firstStep == 0xFF) return 0xFF;
@@ -1771,6 +1634,13 @@ void update_entities(void)
         // 0x0048f10f: Safety guard - max 30 entities (array size)
         if (em_counter > 29) {
             return;
+        }
+
+        // Saturn: the lab's second capsule pushes every enemy slot out of its
+        // cylinder before the slot's own handler runs - GAME4 0x06063256 calls
+        // 0x0605CB38 ahead of the active test, as here.
+        if (g_bSaturnMode) {
+            saturn_capsule_collision(ENTITY->scaMatrixData.localMatrix.t);
         }
 
         // 0x0048f114-0x0048f12b: Only update active entities (status_flags bit 0)

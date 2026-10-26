@@ -116,4 +116,9 @@ uint32_t readU32(const uint8_t* data, size_t size, size_t off) {
            ((uint32_t)data[off + 2] << 16) | ((uint32_t)data[off + 3] << 24);
 }
 
+uint16_t readU16(const uint8_t* data, size_t size, size_t off) {
+    if (off + 2 > size) return 0;
+    return (uint16_t)((uint32_t)data[off] | ((uint32_t)data[off + 1] << 8));
+}
+
 }  // namespace re1

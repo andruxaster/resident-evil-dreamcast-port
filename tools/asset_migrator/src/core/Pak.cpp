@@ -119,4 +119,86 @@ std::string pakName(char stageDigit, int roomId, int cam) {
     return buf;
 }
 
+bool lzwUnpack(const uint8_t* src, size_t n, std::vector<uint8_t>* out,
+               std::string* error) {
+    out->clear();
+    out->reserve(n * 4);
+    // code -> (prefix, first character), as many entries as the game's own
+    // table (g_pakDict, 34981 records at 0x00d2b0b0). This tool's encoder
+    // resets before 0x2000, but Capcom's does not: the PC release's paks run
+    // the dictionary far past that, and a table sized for our own output read
+    // out of bounds on them. Entries below the current nextCode are stale
+    // after a reset, but no code can name one: anything under 0x100 is a
+    // literal and anything from 0x100 to 0x102 is a control code, so the
+    // vector never has to be cleared.
+    constexpr int kDictEntries = 34981;
+    std::vector<std::pair<int, uint8_t>> dict(kDictEntries, {0, 0});
+
+    size_t pos = 0;
+    int codeSize = 9;
+    int nextCode = 0x103;
+    uint8_t cur = 0;
+    uint8_t mask = 0x80;
+
+    auto readCode = [&]() -> int {
+        int result = 0;
+        for (int bit = 1 << (codeSize - 1); bit != 0; bit >>= 1) {
+            if (mask == 0x80) {
+                if (pos >= n) return -1;
+                cur = src[pos++];
+            }
+            if (cur & mask) result |= bit;
+            mask >>= 1;
+            if (mask == 0) mask = 0x80;
+        }
+        return result;
+    };
+
+    int prev = readCode();
+    if (prev < 0 || prev == 0x100) return true;   // empty stream
+    out->push_back((uint8_t)prev);
+    while (true) {
+        const int code = readCode();
+        if (code < 0) {
+            if (error) *error = "stream ended without a 0x100";
+            return false;
+        }
+        if (code == 0x100) return true;
+        if (code == 0x102) {   // dictionary reset
+            nextCode = 0x103;
+            codeSize = 9;
+            const int again = readCode();
+            if (again < 0 || again == 0x100) return true;
+            out->push_back((uint8_t)again);
+            prev = again;
+            continue;
+        }
+        if (code == 0x101) {   // the decoder never grows the width on its own
+            ++codeSize;
+            continue;
+        }
+        const bool special = nextCode <= code;   // KwKwK
+        int walk = special ? prev : code;
+        std::vector<uint8_t> str;
+        while (walk > 0xFF) {
+            // A code past the table, or a chain longer than the table, is a
+            // stream the game could not have decoded either.
+            if (walk >= kDictEntries || str.size() > (size_t)kDictEntries) {
+                if (error) *error = "code outside the dictionary";
+                return false;
+            }
+            str.push_back(dict[walk].second);
+            walk = dict[walk].first;
+        }
+        str.push_back((uint8_t)walk);
+        // The original emits the buffer from its high index down to 0, so the
+        // string comes out reversed with the first character LAST.
+        for (size_t i = str.size(); i-- > 0;) out->push_back(str[i]);
+        const uint8_t first = str.back();
+        if (special) out->push_back(first);
+        if (nextCode < (int)dict.size()) dict[nextCode] = {prev, first};
+        ++nextCode;        prev = code;
+    }
+}
+
 }  // namespace re1

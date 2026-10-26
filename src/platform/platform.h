@@ -64,6 +64,13 @@ BOOL plat_path_is_absolute(const char* path);
 // NULL security descriptor. Returns TRUE if the directory exists afterwards.
 BOOL plat_mkdir(const char* path);
 
+// Enumerate a directory: `visit` is called once per entry (never for "." or
+// ".."), with the entry's own name and whether it is a directory. Returns
+// FALSE when `path` is not a directory that can be read. Port-only; used to
+// index the HD texture folder (system/HdTextures.cpp).
+typedef void (*PlatDirVisit)(const char* name, BOOL isDirectory, void* user);
+BOOL plat_dir_list(const char* path, PlatDirVisit visit, void* user);
+
 // Write a buffer to a file, creating or truncating it. Returns TRUE on success.
 // Replaces the CreateFileA/WriteFile pair in MarniBits::SaveBitmapToFile.
 BOOL plat_file_write(const char* path, const void* data, size_t size);
@@ -79,6 +86,10 @@ size_t plat_readable_bytes(const void* p);
 // Replaces the CreateFileA/GetFileSize/ReadFile sequence in
 // PSXTexture::LoadFromFile.
 void* plat_file_read_all(const char* path, size_t* outSize);
+
+// Last-modified time of a file as seconds since 1970-01-01 UTC, or 0 when the
+// file cannot be examined. Used to date saves that carry no timestamp.
+unsigned int plat_file_mtime(const char* path);
 
 // ---------------------------------------------------------------------------
 // Diagnostics
@@ -128,6 +139,33 @@ void plat_window_destroy(HWND window);
 void plat_cursor_show(BOOL show);
 
 // ---------------------------------------------------------------------------
+// Display settings (the title screen's OPTIONS > DISPLAY page)
+//
+// The game changes g_bFullScreen / g_dwScreenWidth / g_dwScreenHeight /
+// g_bVSync and then asks for them to be applied. The request is only recorded:
+// the platform loop applies it between two frames, on its own stack, because
+// resizing a window re-enters the window procedure and the renderer's resize
+// path, and the game's code runs on small task stacks (docs/TASK_SCHEDULER.md).
+// ---------------------------------------------------------------------------
+void plat_display_request_apply(void);
+
+// Quit and start the game again (OPTIONS > GAME > APPLY, for the settings that
+// are only read at start-up). Only recorded here, like the display request: the
+// platform loop shuts down the way closing the window does - settings saved,
+// renderer released, single-instance lock dropped - and the new process is
+// started as the very last thing the old one does. The caller must have
+// written whatever the new process should read before asking.
+void plat_request_restart(void);
+
+// Quit to the desktop (OPTIONS > EXIT GAME). Closes the window exactly as its
+// close button does, so the normal exit path runs; nothing is relaunched.
+void plat_request_quit(void);
+
+// Size of the desktop the window is on, for filtering the resolution list.
+// FALSE (and 0x0) when it cannot be determined.
+BOOL plat_display_desktop_size(int* width, int* height);
+
+// ---------------------------------------------------------------------------
 // FMV playback backend (Phase 7)
 //
 // src/video/VideoPlayback.cpp owns the 4-state machine, the per-FMV skip masks,
@@ -154,6 +192,11 @@ BOOL plat_video_init(void);
 // Open `path` and start playing. playToMs > 0 stops at that time (the
 // prologue's Chris-only beat); 0 plays through to the end.
 BOOL plat_video_open_and_play(const char* path, int playToMs);
+
+// Length of the movie at `path` in milliseconds, read without playing it;
+// 0 when it cannot be determined. The prologue cut is chosen from it (the
+// censored releases' prologue is ~16 s shorter).
+int plat_video_probe_duration_ms(const char* path);
 
 // Resume the already-open movie from fromMs through to the end.
 void plat_video_play_from(int fromMs);

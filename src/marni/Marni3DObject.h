@@ -216,6 +216,12 @@ public:
 int PSXObject_Store(CMarniDirect3DTMD* self, int* tmdHdr, int objIndex,
                     int bankOrTpage, int texRef);
 
+// Port extension: height of the texture the next PSXObject_Store binds, when it
+// is taller than 256 lines (a multi-page Saturn model TIM); 0 restores V / 256.
+// Only the 0x34000609 packet reads it, taking its page from the halfword after
+// (u2, v2). No original asset has such a TIM, so the stock path is unchanged.
+void PSXObject_SetTexHeight(int height);
+
 // ============================================================================
 // Known debug strings:
 //   "MarniSystem Direct3DTMD::Trans"    at 0x004b45e8

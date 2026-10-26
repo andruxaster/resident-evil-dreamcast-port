@@ -125,6 +125,15 @@ int main(int argc, char** argv)
     crashlog_mark("config");
     ConfigFile_EnsureExists();   // fails harmlessly on read-only /cd
     ConfigFile_Load();
+#if !RE1_DC_SATURN
+    // Built without the Saturn content (RE1_DC_SATURN=0): a config.ini asking
+    // for Mode=SATURN gets the PC release instead of a half-stubbed mode.
+    if (g_GameMode == GAME_MODE_SATURN) {
+        printf("[DC] Mode=SATURN needs a RE1_DC_SATURN=1 build - playing ORIGINAL\n");
+        g_GameMode = GAME_MODE_OG;
+        SetAssetMode("");          // the overlay follows the mode (ConfigFile.cpp)
+    }
+#endif
 
     // Saves: the game reads/writes the RAM disk; vmu_save.cpp mirrors it to
     // the VMU (loaded here, written back after every save).

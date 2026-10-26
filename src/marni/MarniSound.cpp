@@ -19,6 +19,13 @@ static IXAudio2SourceVoice*    g_BankVoices[81];  // bank handles 1-80
 // audio files - see AudioFile.h.
 static UINT32                  g_BankLoopBegin[81];
 static UINT32                  g_BankLoopLength[81];
+// IDirectSoundBuffer::Stop leaves the play cursor where it is, and PlaySound
+// (0x0041ee60) only rewinds a buffer that is still playing - so a stopped bank
+// resumes, which is what PauseSounds / ResumePausedSounds are built on. A held
+// bank is one StopSound left with its buffer still queued on the voice.
+static bool                    g_BankHeld[81];
+static bool                    g_BankLooping[81];      // queued buffer loops
+static UINT64                  g_BankBaseSamples[81];  // SamplesPlayed at submit
 
 // ============================================================================
 // SFX filename sub-tables
@@ -126,7 +133,8 @@ int DirectSound::GetStatus(int bank)
     if (buf == NULL) return 0;
 
     if (buf == DS_STUB_BUF) {
-        if (g_BankVoices[bank] != NULL) {
+        // A held bank still has its buffer queued, but it is stopped.
+        if (g_BankVoices[bank] != NULL && !g_BankHeld[bank]) {
             XAUDIO2_VOICE_STATE state = {};
             g_BankVoices[bank]->GetState(&state);
             if (state.BuffersQueued > 0) {
@@ -227,6 +235,7 @@ void DirectSound::DestroySound(int bank)
         g_BankVoices[bank]->DestroyVoice();
         g_BankVoices[bank] = NULL;
     }
+    g_BankHeld[bank] = false;
 
     BANK_DSBUF(bank) = NULL;
 
@@ -287,8 +296,12 @@ void DirectSound::StopSound(int bank)
     if (buf == DS_STUB_BUF) {
         IXAudio2SourceVoice* voice = g_BankVoices[bank];
         if (voice != NULL) {
+            // No flush: the buffer stays queued at its position, as a stopped
+            // DirectSound buffer keeps its play cursor.
             voice->Stop(0);
-            voice->FlushSourceBuffers();
+            XAUDIO2_VOICE_STATE state = {};
+            voice->GetState(&state);
+            g_BankHeld[bank] = (state.BuffersQueued > 0);
         }
         BANK_STATUS(bank) = 0;
         return;
@@ -324,6 +337,40 @@ void DirectSound::PlaySound(int bank, unsigned int slot)
             return;
         }
 
+        // 0x0041ee60 rewinds (SetCurrentPosition(0)) only a buffer that is
+        // still playing; a stopped one plays on from its cursor.
+        const bool loop = (slot != 0);
+        UINT32 playBegin = 0;
+        if (g_BankHeld[bank]) {
+            g_BankHeld[bank] = false;
+            XAUDIO2_VOICE_STATE state = {};
+            voice->GetState(&state);
+            if (state.BuffersQueued > 0) {
+                if (loop == g_BankLooping[bank] || !loop) {
+                    // Same buffer, from where it stopped. Play without
+                    // DSBPLAY_LOOPING on a looping one: finish this pass.
+                    if (!loop && g_BankLooping[bank]) {
+                        voice->ExitLoop(0);
+                        g_BankLooping[bank] = false;
+                    }
+                    if (FAILED(voice->Start(0))) {
+                        BANK_STATUS(bank) = 0;
+                        return;
+                    }
+                    voice->SetVolume(DsVolumeToAmplitude(BANK_VOL(bank)));
+                    BANK_STATUS(bank) = 1;
+                    return;
+                }
+                // A one-shot resumed as a loop: the loop count belongs to the
+                // queued buffer, so queue it again from the same frame.
+                const DWORD frameBytes = (DWORD)BANK_CH(bank) * BANK_BPS(bank) / 8;
+                const UINT64 played = state.SamplesPlayed - g_BankBaseSamples[bank];
+                if (frameBytes != 0 && played < BANK_PCM_SZ(bank) / frameBytes) {
+                    playBegin = (UINT32)played;
+                }
+            }
+        }
+
         // Stop and flush any existing playback on the reusable voice
         voice->Stop(0);
         voice->FlushSourceBuffers();
@@ -332,11 +379,16 @@ void DirectSound::PlaySound(int bank, unsigned int slot)
         BYTE* pcmData = BANK_PCM_PTR(bank);
         DWORD pcmSize = BANK_PCM_SZ(bank);
 
+        XAUDIO2_VOICE_STATE base = {};
+        voice->GetState(&base);
+        g_BankBaseSamples[bank] = base.SamplesPlayed - playBegin;
+        g_BankLooping[bank] = loop;
+
         XAUDIO2_BUFFER xa2buf = {};
         xa2buf.Flags = 0;
         xa2buf.AudioBytes = pcmSize;
         xa2buf.pAudioData = pcmData;
-        xa2buf.PlayBegin = 0;
+        xa2buf.PlayBegin = playBegin;
         xa2buf.PlayLength = 0;
         xa2buf.LoopBegin = 0;
         xa2buf.LoopLength = 0;
@@ -522,6 +574,8 @@ int DirectSound::CreateSound(const char* wavName)
     // ignored).
     g_BankLoopBegin[bank] = af.loopBegin;
     g_BankLoopLength[bank] = af.loopEnd > af.loopBegin ? af.loopEnd - af.loopBegin : 0;
+    g_BankHeld[bank] = false;
+    g_BankLooping[bank] = false;
 
     // Create the DirectSound buffer for this bank
     NewDirectSoundBuffer((DWORD*)BANK_BASE(bank));
@@ -614,7 +668,7 @@ void InitializeSoundSystem(void)
         // gave the PS1 audio (37.8 / 44.1 kHz) mixes at 44.1 kHz instead, or
         // the extra bandwidth would be thrown away.
         hr = g_pXAudio2->CreateMasteringVoice(&g_pMasterVoice, 2,
-                                              AudioFile_TreeHasPs1Audio() ? 44100 : 22050,
+                                              AudioFile_TreeHasCDAudio() ? 44100 : 22050,
                                               0, NULL, NULL);
         if (FAILED(hr)) {
             sprintf(dbg, "[XA2] CreateMasteringVoice failed: 0x%08X\n", hr);

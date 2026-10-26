@@ -1,5 +1,6 @@
 #include "core/Ps1Audio.h"
 
+#include "core/AudioWriter.h"
 #include "core/Process.h"
 #include "core/Ps1AudioManifest.h"
 #include "core/Spu.h"
@@ -41,115 +42,12 @@ const double kBgmGain = 1.5;
 const int kXaRate = 37800;
 const int kXaChannels = 16;
 
-void put16(std::vector<uint8_t>& b, uint32_t v) {
-    b.push_back((uint8_t)(v & 0xFF));
-    b.push_back((uint8_t)((v >> 8) & 0xFF));
-}
-void put32(std::vector<uint8_t>& b, uint32_t v) {
-    put16(b, v & 0xFFFF);
-    put16(b, v >> 16);
-}
-void putTag(std::vector<uint8_t>& b, const char* t) { b.insert(b.end(), t, t + 4); }
-
-// A decoded sound, interleaved 16-bit. loopStart/loopEnd are frames
-// ([start, end)), -1 when the sound does not loop.
-struct Clip {
-    std::vector<int16_t> pcm;
-    int channels = 1;
-    int rate = 44100;
-    long loopStart = -1;
-    long loopEnd = -1;
-    size_t frames() const { return pcm.size() / (size_t)channels; }
-    bool loops() const { return loopStart >= 0 && loopEnd > loopStart; }
-};
-
-// 16-bit PCM WAV with the migrator's marker chunk "re1p" and, for a looping
-// clip, a `smpl` chunk. The game honours the loop only in marked files (the
-// PC tree's own BGM_33.WAV has a smpl chunk the original ignored); see
-// src/system/AudioFile.h.
-std::vector<uint8_t> buildWav(const Clip& c) {
-    const uint32_t dataBytes = (uint32_t)(c.pcm.size() * 2);
-    std::vector<uint8_t> b;
-    b.reserve(56 + dataBytes + 68);
-    putTag(b, "RIFF");
-    put32(b, 0);  // patched below
-    putTag(b, "WAVE");
-    putTag(b, "fmt ");
-    put32(b, 16);
-    put16(b, 1);
-    put16(b, (uint32_t)c.channels);
-    put32(b, (uint32_t)c.rate);
-    put32(b, (uint32_t)(c.rate * c.channels * 2));
-    put16(b, (uint32_t)(c.channels * 2));
-    put16(b, 16);
-    putTag(b, "re1p");
-    put32(b, 4);
-    put32(b, 1);
-    putTag(b, "data");
-    put32(b, dataBytes);
-    const uint8_t* p = reinterpret_cast<const uint8_t*>(c.pcm.data());
-    b.insert(b.end(), p, p + dataBytes);
-    if (c.loops()) {
-        putTag(b, "smpl");
-        put32(b, 36 + 24);
-        put32(b, 0);                                  // manufacturer
-        put32(b, 0);                                  // product
-        put32(b, (uint32_t)(1000000000.0 / c.rate));  // sample period, ns
-        put32(b, 60);                                 // MIDI unity note
-        put32(b, 0);                                  // pitch fraction
-        put32(b, 0);                                  // SMPTE format
-        put32(b, 0);                                  // SMPTE offset
-        put32(b, 1);                                  // loops
-        put32(b, 0);                                  // sampler data
-        put32(b, 0);                                  // cue point id
-        put32(b, 0);                                  // forward loop
-        put32(b, (uint32_t)c.loopStart);
-        put32(b, (uint32_t)(c.loopEnd - 1));          // inclusive
-        put32(b, 0);                                  // fraction
-        put32(b, 0);                                  // play count: forever
-    }
-    const uint32_t riff = (uint32_t)(b.size() - 8);
-    std::memcpy(b.data() + 4, &riff, 4);
-    return b;
-}
-
-// Ogg Vorbis through ffmpeg (raw PCM on stdin). The loop and the marker go in
-// as Vorbis comments: LOOPSTART / LOOPLENGTH (frames, the usual convention)
-// and RE1PS1=1.
-std::string encodeOgg(const std::string& ffmpeg, int quality, const Clip& c,
-                      const std::string& out) {
-    std::vector<std::string> args = {
-        "-hide_banner", "-loglevel", "error", "-y", "-f", "s16le",
-        "-ar", std::to_string(c.rate), "-ac", std::to_string(c.channels), "-i", "-",
-        "-c:a", "libvorbis", "-q:a", std::to_string(quality),
-        "-metadata", "RE1PS1=1"};
-    if (c.loops()) {
-        args.insert(args.end(), {"-metadata", "LOOPSTART=" + std::to_string(c.loopStart),
-                                 "-metadata",
-                                 "LOOPLENGTH=" + std::to_string(c.loopEnd - c.loopStart)});
-    }
-    args.push_back(out);
-    ChildProcess proc;
-    std::string err;
-    if (!proc.start(ffmpeg, args, false, &err)) return "cannot start ffmpeg: " + err;
-    proc.writeStdin(c.pcm.data(), c.pcm.size() * 2);
-    proc.closeStdin();
-    int code = -1;
-    proc.wait(&code);
-    if (code != 0) {
-        std::string msg = proc.stderrText();
-        if (msg.find("libvorbis") != std::string::npos || msg.find("Unknown encoder") != std::string::npos)
-            msg += " (the ffmpeg build needs the libvorbis encoder)";
-        return "ffmpeg failed for " + out + ": " + msg;
-    }
-    return std::string();
-}
 
 // Writes clips into the tree's Sound/Voice folders under the name the tree
 // already uses, replacing the PC file: a WAV overwrites it, an OGG replaces it
 // (the .wav is deleted once the .ogg is written, since the game prefers the
 // .ogg anyway and two copies would only waste space). Records every file for
-// Sound/PS1AUDIO.TXT.
+// Sound/AUDIO.TXT.
 class Writer {
 public:
     Writer(const std::string& tree, const Ps1AudioOptions& o) : m_tree(tree), m_opts(o) {
@@ -567,7 +465,7 @@ int removePs1Audio(const std::string& treeRoot, const Progress& progress) {
     if (soundDir.empty()) return 0;
     std::string listPath;
     for (const auto& e : listDirectory(soundDir))
-        if (toUpper(e) == ps1AudioListName()) listPath = joinPath(soundDir, e);
+        if (toUpper(e) == ps1AudioListName() || toUpper(e) == "AUDIO.TXT") listPath = joinPath(soundDir, e);
     std::vector<uint8_t> data;
     if (listPath.empty() || !readFile(listPath, &data)) return 0;
     std::istringstream in(std::string(data.begin(), data.end()));

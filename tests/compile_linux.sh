@@ -14,6 +14,7 @@ FLAGS="-m32 -std=c++17 -Isrc -c -w"
 # registry/dbghelp, DXGI). See docs/LINUX_PORT.md section 6.1.
 SRC=$(ls src/game/*.cpp src/game/entities/*.cpp \
          src/system/AssetPath.cpp src/system/AudioFile.cpp src/system/ConfigFile.cpp \
+         src/system/PngImage.cpp src/system/WebpImage.cpp src/system/HdTextures.cpp \
          src/marni/MarniBits.cpp src/marni/PSXTexture.cpp \
          src/marni/Marni3DObject.cpp src/marni/MarniSystem.cpp \
          src/video/VideoPlayback.cpp \

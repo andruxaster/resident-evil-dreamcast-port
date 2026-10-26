@@ -30,6 +30,15 @@ each one fails quietly if it drifts:
    (SLUS_005.51 0x8004228c) must test 0x7a and refill to 6, the viewer
    (0x8005436c) must test 0x7a for item 5.
 
+5. **The next-cycle save's start handgun.** An ADVANCED run's ending hands the
+   Beretta M92FS custom (item 4) to the save it leaves behind, and the DC gets
+   there by raising the ADVANCED bit just for the `SetInitialItems` call and
+   clearing it again (ENDING_DC.EXE 0x800e17d0). `game_start` masks that bit
+   off before the ending runs, so the port has to put it back from
+   `g_DcDifficulty` - otherwise every game started from a post-ending save gets
+   the plain Beretta. This reads the PS1 window through the bridge and checks
+   the port raises and clears around the same call.
+
     python tools/verify_dc_save_mode.py
 """
 import json
@@ -46,6 +55,12 @@ PROGRAM = 'SLUS_005.51'
 DC_LOAD_MODE_FN = '0x80019638'
 DC_PYTHON_AMMO_FN = '0x8004228c'
 DC_PYTHON_QTY_FN = '0x8005436c'
+# The DC ending overlay's raise-ADVANCED / SetInitialItems / clear-ADVANCED
+# window, read as instructions (the whole ending_entry is far too big to
+# decompile).
+DC_ENDING_PROGRAM = 'ENDING_DC.EXE'
+DC_ENDING_INIT_ITEMS = '0x800e17d0'
+DC_ENDING_INIT_ITEMS_LEN = 0x64
 
 BIOCARD_H = os.path.join(REPO, 'src', 'game', 'BioCard.h')
 SAVE_SRC = os.path.join(REPO, 'src', 'game', 'SaveLoadScreen.cpp')
@@ -332,11 +347,113 @@ def check_infinite_python():
                % DC_PYTHON_QTY_FN)
 
 
+# ---------------------------------------------------------------------------
+# 5. The next-cycle save's start handgun
+# ---------------------------------------------------------------------------
+def _bridge_disassemble(program, address, length):
+    """The bridge's instruction list for a byte window, or None if it is down."""
+    url = 'http://127.0.0.1:8089/disassemble_bytes'
+    body = json.dumps({'program': program, 'start_address': address,
+                       'length': length}).encode('utf-8')
+    req = urllib.request.Request(url, data=body,
+                                 headers={'Content-Type': 'application/json'})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            parsed = json.loads(r.read().decode('utf-8', 'replace'))
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        print('  SKIP Ghidra bridge not reachable (%s)' % exc)
+        return None
+    if not parsed.get('success'):
+        fail('the bridge could not disassemble %s at %s: %s'
+             % (program, address, parsed.get('message', '?')))
+        return None
+    return parsed['instructions']
+
+
+def _lui_tracked_writes(insns):
+    """Every read-modify-write of g_status_flags in a window, with the constant
+    it applies, resolved through the `lui` that loaded it.
+
+    The ending builds its constants with `lui reg, imm` (so `lui reg, 0x2` is
+    0x00020000, not 2) and folds the low half in with an `ori`, and it reaches
+    g_status_flags through a `lw`/`sw` pair on 0x800c3004. Tracking both is what
+    makes the bit value checkable without pinning down which registers the
+    compiler happened to pick.
+    """
+    lui = {}
+    gflags = set()
+    writes = []
+    for ins in insns:
+        mnem = ins['mnemonic']
+        ops = [o.strip() for o in ins['operands'].split(',')]
+        if mnem == 'lui' and len(ops) == 2:
+            lui[ops[0]] = int(ops[1], 0) << 16
+        elif mnem == 'ori' and len(ops) == 3 and ops[0] == ops[1] and ops[0] in lui:
+            lui[ops[0]] |= int(ops[2], 0)
+        elif mnem == 'lw' and len(ops) == 2 and '0x3004' in ops[1]:
+            gflags.add(ops[0])
+        elif mnem == 'or' and len(ops) == 3 and ops[0] in gflags:
+            writes.append((ins['address'], mnem, lui.get(ops[2])))
+            gflags.discard(ops[0])
+        elif mnem == 'and' and len(ops) == 3 and ops[0] in gflags:
+            writes.append((ins['address'], mnem, lui.get(ops[2])))
+            gflags.discard(ops[0])
+        elif mnem == 'sw' and len(ops) == 2 and '0x3004' in ops[1]:
+            gflags.add(ops[0])
+    return writes
+
+
+def check_ending_start_items():
+    print('5. the next-cycle save\'s start handgun (ADVANCED -> Beretta custom)')
+    insns = _bridge_disassemble(DC_ENDING_PROGRAM, DC_ENDING_INIT_ITEMS,
+                                DC_ENDING_INIT_ITEMS_LEN)
+    if insns is not None:
+        addrs = [i['address'] for i in insns]
+        call = next((n for n, i in enumerate(insns) if i['mnemonic'] == 'jalr'), None)
+        writes = _lui_tracked_writes(insns)
+        before = [w for w in writes if call is not None and addrs.index(w[0]) < call]
+        after = [w for w in writes if call is not None and addrs.index(w[0]) > call]
+        if not any(m == 'or' and v == 0x20000 for _, m, v in before):
+            fail('%s does not raise 0x20000 in g_status_flags before its init-items'
+                 ' call' % DC_ENDING_INIT_ITEMS)
+        elif not any(m == 'and' and v == 0xfffdffff for _, m, v in after):
+            fail('%s does not clear 0x20000 again after the call'
+                 % DC_ENDING_INIT_ITEMS)
+        else:
+            ok('%s raises ADVANCED for the init-items call and clears it after'
+               % DC_ENDING_INIT_ITEMS)
+
+    ending = open(os.path.join(REPO, 'src', 'game', 'EndingScreen.cpp'),
+                  encoding='utf-8', errors='replace').read()
+    reset = ending.index('LoadFile(GAME_DATA_ROOT "data\\\\bio_card.dat", g_BioCardData, 0x20);')
+    window = ending[reset:]
+    steps = (
+        (r'g_DcDifficulty\s*>=\s*DC_DIFFICULTY_ADVANCED', 'an ADVANCED difficulty test'),
+        (r'g_main_state_flags2\s*\|=\s*MSF2_DC_ADVANCED\s*;', 'the bit raise'),
+        (r'SetInitialItems\(\)\s*;', 'SetInitialItems'),
+        (r'g_main_state_flags2\s*&=\s*~MSF2_DC_ADVANCED\s*;', 'the bit clear'),
+    )
+    pos = 0
+    missing = None
+    for pattern, what in steps:
+        m = re.compile(pattern).search(window, pos)
+        if m is None:
+            missing = what
+            break
+        pos = m.end()
+    if missing is not None:
+        fail('the ending\'s next-cycle save does not have %s in that order after the'
+             ' bio-card reset' % missing)
+    else:
+        ok('the ending raises ADVANCED, builds the start list, clears it again')
+
+
 def main():
     check_layout()
     check_ps1_mapping()
     check_fonts()
     check_infinite_python()
+    check_ending_start_items()
     print()
     if failures:
         print('%d check(s) FAILED' % len(failures))

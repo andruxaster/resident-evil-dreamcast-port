@@ -195,7 +195,40 @@ def constants(rows, prefix, term):
     return ''.join(out), seen
 
 
-def pointer_table(rows, prefix, decl, count):
+# Port-only entries past the end of a decoded table: {table key: {index:
+# (symbol, STR_JP source, note)}}. They are not in Biohazard.exe, so neither
+# `jpn_msg_decode.py verify` nor test_str_jp.cpp covers them; each names the
+# check that does.
+#
+# [63] is the Sega Saturn Battle Game's opening message, the JPN twin of the
+# USA port's s_gm63 (src/Globals.cpp). The Japanese Saturn disc keeps the
+# English sentence, spelled in this very encoding (Bio Hazard GAME5.PRG
+# 0x0609EB37, pointer at 0x0609EC8C; the '.' is F8 1C where the USA has 0x79),
+# so the source text is the USA entry's; tools/verify_saturn_battle.py compares
+# its encoding with the JPN disc. One difference: STR_JP's \d only takes the
+# raw \d\xNN form - a plain operand is NOT consumed, so the USA spelling `\dT`
+# lost its auto-dismiss and printed a 'T' - so the delay is spelled \d\x30,
+# the byte the USA STR encodes 'T' to (48 frames).
+PORT_EXTRAS = {
+    'messages': {
+        63: ('s_gmjp_sat63',
+             'You must defeat\\\\nall the enemies\\\\pTand enter into the'
+             '\\\\nmysterious zone.\\\\d\\\\x30',
+             'Saturn Battle Game opening (port-only)'),
+    },
+}
+
+
+def extra_constants(key):
+    out = []
+    for i, (sym, src, note) in sorted(PORT_EXTRAS.get(key, {}).items()):
+        out.append('// [%d] %s - JPN Saturn GAME5.PRG 0x0609EB37\n' % (i, note))
+        out.append('static constexpr auto %s = STR_JP(u8"%s");\n' % (sym, src))
+    return ''.join(out)
+
+
+def pointer_table(rows, prefix, decl, count, key=None):
+    extras = PORT_EXTRAS.get(key, {})
     out = ['%s = {\n' % decl]
     for i, p, text, dismiss, raw in rows:
         if text is None:
@@ -204,6 +237,11 @@ def pointer_table(rows, prefix, decl, count):
             entry = '    (unsigned char*)%s_%06X.bytes,' % (prefix, p)
             out.append('%-46s// [%3d] %s\n' % (entry, i, comment(text)))
     for i in range(len(rows), count):
+        if i in extras:
+            sym, src, note = extras[i]
+            entry = '    (unsigned char*)%s.bytes,' % sym
+            out.append('%-46s// [%3d] %s\n' % (entry, i, note))
+            continue
         out.append('    NULL,%s// [%3d]\n' % (' ' * 26, i))
     out.append('};\n\n')
     return ''.join(out)
@@ -242,7 +280,10 @@ def gen_tables():
         out.append('// %s\n' % ('-' * 74))
         if fresh:
             out.append(fresh + '\n')
-        out.append(pointer_table(rows, prefix, decl, count))
+        extra = extra_constants(key)
+        if extra:
+            out.append(extra + '\n')
+        out.append(pointer_table(rows, prefix, decl, count, key))
     return ''.join(out)
 
 

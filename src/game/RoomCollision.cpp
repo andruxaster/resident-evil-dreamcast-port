@@ -461,6 +461,14 @@ unsigned char check_room_collision(VECTOR* position, short radius)
 // ===========================================================================
 short room_collision_check_0047da50(VECTOR* position, VECTOR* offset)
 {
+    return room_collision_check_radius(position, offset, 0);
+}
+
+// The same query with the boundary rectangles grown by `radius`. The PC only
+// ever asks with 0; the Saturn's Tick asks with 2 for its path probe
+// (GAME2 0x0604CBC8's third argument, saturn/SaturnTick.cpp).
+short room_collision_check_radius(VECTOR* position, VECTOR* offset, unsigned int radius)
+{
     unsigned short bits = 0;
 
     if (g_RdtPointer == NULL || g_RdtPointer->boundaries == NULL) return 0;
@@ -474,7 +482,7 @@ short room_collision_check_0047da50(VECTOR* position, VECTOR* offset)
     RDT_Boundary* last  = hdr->group[cell + 1];
 
     for (RDT_Boundary* rec = first; rec < last; rec++) {
-        unsigned short f = boundary_classify_flags((SVECTOR*)offset, rec, 0);
+        unsigned short f = boundary_classify_flags((SVECTOR*)offset, rec, radius);
         if ((short)f == -1) continue;
         if ((unsigned char)((f & 0x300) >> 8) == 3) return 1;
         bits |= (unsigned short)(f & 0x300);

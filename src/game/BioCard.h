@@ -38,7 +38,14 @@ struct alignas(4) BioCardLayout {
     unsigned char pickupQtyA;                // 0x20C (DAT_00be982c)
     unsigned char pickupQtyB;                // 0x20D (DAT_00be982d)
     unsigned char pickupQtyC;                // 0x20E (DAT_00be982e)
-    unsigned char pad_0x20f;                 // 0x20F (no references in the binary)
+    // 0x20F: padding in the USA build (no references in the binary) and the
+    // Sega Saturn's Battle Game unlock. The Saturn keeps the flag in save byte
+    // 0xBF and raises it unconditionally at the top of ENDING.PRG (0x0602DC28,
+    // any ending counts) or with the port-2 X+Y+Z+Start cheat on the title's
+    // press-start screen (TITLE.PRG TitleMain 0x0602DD70). A USA save has 0 here,
+    // so the third title item stays hidden, and the byte is only ever read and
+    // written in Saturn mode - see src/game/saturn/SaturnBattle.cpp.
+    unsigned char saturnBattleUnlocked;      // 0x20F
     unsigned char fwdPosActionId;            // 0x210 (DAT_00be9830, index+1 of the action-zone entry hit by the forward probed player pos)
     unsigned char entPosActionId;            // 0x211 (DAT_00be9831, same but probed against the player entity matrix pos)
     unsigned char usedItemId;                // 0x212
@@ -108,6 +115,7 @@ static_assert(sizeof(BioCardLayout) == 0x41C, "BioCardLayout size mismatch");
 #define g_pickupQtyA              (g_BioCard.pickupQtyA)                        // BYTE 0x00be982c - remembered pick-up quantity, SCD opcode 0x4C index 12
 #define g_pickupQtyB              (g_BioCard.pickupQtyB)                        // BYTE 0x00be982d - remembered pick-up quantity, SCD opcode 0x4C index 13
 #define g_pickupQtyC              (g_BioCard.pickupQtyC)                        // BYTE 0x00be982e - remembered pick-up quantity, SCD opcode 0x4C index 14
+#define g_SaturnBattleUnlocked    (g_BioCard.saturnBattleUnlocked)                // BYTE 0x00be982f - Saturn Battle Game unlock (the Saturn's save byte 0xBF)
 #define g_fwdPosActionId          (g_BioCard.fwdPosActionId)                    // BYTE 0x00be9830 - action-zone entry hit at the forward probed player pos; cleared by room_state_reset
 #define g_entPosActionId          (g_BioCard.entPosActionId)                    // BYTE 0x00be9831 - action-zone entry hit at the player entity pos
 #define g_usedItemId              (g_BioCard.usedItemId)                        // BYTE 0x00be9832

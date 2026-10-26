@@ -4,8 +4,10 @@
 #include "../marni/MarniSystem.h"
 #include "../marni/PSXTexture.h"
 #include "../marni/MarniBits.h"
+#include "../system/HdTextures.h"
 #include "TmdRenderer.h"
 #include <cstdio>
+#include <cstring>
 #include <algorithm>
 #include <cstdlib>
 #include <cmath>
@@ -54,6 +56,32 @@ int GetTextureVariant(unsigned int textureFlags) {
         return (int)((textureFlags & TEXDESC_VARIANT_MASK) >> 28) + 1;
     }
     return 0;
+}
+
+// Port-only: the draw callbacks type-13 commands index (see AddSpriteCallback).
+// A command keeps a table index rather than the pointer itself so the entry's
+// layout stays the original's.
+#define SPRITE_CALLBACK_MAX 4
+static SpriteDrawCallback s_spriteCallbacks[SPRITE_CALLBACK_MAX];
+
+int AddSpriteCallback(SpriteDrawCallback fn, unsigned int depthSort)
+{
+    if (fn == NULL || g_SpriteQueueCount >= MAX_SPRITE_COMMANDS) return 0;
+    unsigned int slot = 0;
+    while (slot < SPRITE_CALLBACK_MAX && s_spriteCallbacks[slot] != NULL &&
+           s_spriteCallbacks[slot] != fn) {
+        slot++;
+    }
+    if (slot >= SPRITE_CALLBACK_MAX) return 0;
+    s_spriteCallbacks[slot] = fn;
+
+    TextureDraw* cmd = &g_SpriteCommandBuffer[g_SpriteQueueCount++];
+    memset(cmd, 0, sizeof(*cmd));
+    cmd->type = SPRITE_TYPE_CALLBACK;
+    cmd->depthSort = depthSort;
+    cmd->extraFlags = slot;
+    cmd->sortClass = SPRITE_CLASS_NORMAL;
+    return 1;
 }
 
 // ============================================================================
@@ -141,6 +169,11 @@ void FlushSpriteCommandsRange(unsigned int minDepth, unsigned int maxDepth,
             if (ca > 255) ca = 255; if (ca < 0) ca = 0;
             DWORD color = ((DWORD)ca << 24) | ((DWORD)cr << 16) | ((DWORD)cg << 8) | (DWORD)cb;
             MarniDrawLine(sx0, sy0, sx1, sy1, 1.0f, color);
+            continue;
+        }
+        if (cmd->type == SPRITE_TYPE_CALLBACK) {
+            if (cmd->extraFlags < SPRITE_CALLBACK_MAX && s_spriteCallbacks[cmd->extraFlags])
+                s_spriteCallbacks[cmd->extraFlags](scaleX, scaleY);
             continue;
         }
         if (cmd->type == 12) {
@@ -313,7 +346,22 @@ void FlushSpriteCommandsRange(unsigned int minDepth, unsigned int maxDepth,
         if (cmd->spriteFlags & SPRITE_FLAG_MIRROR_U) { float t = u0; u0 = u1; u1 = t; }
         if (cmd->spriteFlags & SPRITE_FLAG_MIRROR_V) { float t = v0; v0 = v1; v1 = t; }
 
-        MarniDrawSprite(x, y, w, h, u0, v0, u1, v1, color, srv);
+        if (cmd->spriteFlags & SPRITE_FLAG_ADD_ALPHA) {
+            MarniDrawSpriteAddAlpha(x, y, w, h, u0, v0, u1, v1, color, srv);
+        } else if (cmd->spriteFlags & SPRITE_FLAG_ADDITIVE) {
+            MarniDrawSpriteAdd(x, y, w, h, u0, v0, u1, v1, color, srv);
+            // The PS1 blends only the STP texels; the rest of the sprite is
+            // opaque. Where the page was loaded with that split, lay its
+            // non-STP texels back over the additive result. The base-handle
+            // test drops a split left behind by a loader that replaced the
+            // page without going through LoadTexturePage.
+            MarniHandle opaque = g_TexturePageOpaqueSRV[texSlot];
+            if (opaque != MARNI_NULL_HANDLE && g_TexturePageOpaqueBase[texSlot] == srv) {
+                MarniDrawSprite(x, y, w, h, u0, v0, u1, v1, color | 0xFF000000u, opaque);
+            }
+        } else {
+            MarniDrawSprite(x, y, w, h, u0, v0, u1, v1, color, srv);
+        }
     }
 }
 
@@ -588,7 +636,8 @@ int AddSprite(TextureDesc* texture, short depth, int tpage, int fade) {
 // ============================================================================
 int SubmitEffectSprite(TextureDesc* texture, int depth, int textureId,
                        unsigned char r, unsigned char g, unsigned char b,
-                       int scaleX, int scaleY, int blendMode, short brightness) {
+                       int scaleX, int scaleY, int blendMode, short brightness,
+                       int ps1Blend) {
     if (g_SpriteQueueCount >= MAX_SPRITE_COMMANDS - 1) return 0;
 
     // Both only feed the OT bucket, which the port does not use.
@@ -633,6 +682,30 @@ int SubmitEffectSprite(TextureDesc* texture, int depth, int textureId,
     cmd->variantAlpha = (float)blendMode * 0.00390625f;
     cmd->alpha        = SpriteDrawAlpha(cmd->variantAlpha);
     cmd->extraFlags = textureId;
+
+    // Port-only: the PS1 blend instead of the PC's band-table one (see
+    // effect_submit_sprite). ABR 2 (subtract) has no shipped user and the
+    // renderer has no reverse-subtract state, so it falls back to ABR 0.
+    switch (ps1Blend) {
+    case EFFECT_BLEND_PC:
+        break;
+    case EFFECT_BLEND_OPAQUE:
+        cmd->alpha = 1.0f;
+        break;
+    case EFFECT_BLEND_ABR1:
+        cmd->alpha = 1.0f;
+        cmd->spriteFlags |= SPRITE_FLAG_ADD_ALPHA;
+        break;
+    case EFFECT_BLEND_ABR3:
+        cmd->alpha = 0.25f;
+        cmd->spriteFlags |= SPRITE_FLAG_ADD_ALPHA;
+        break;
+    case EFFECT_BLEND_ABR0:
+    case EFFECT_BLEND_ABR2:
+    default:
+        cmd->alpha = 0.5f;
+        break;
+    }
 
     if (useSubpixel) {
         int iVar4 = (int)texture->pivotX * (int)texture->scaleX;
@@ -1068,6 +1141,16 @@ static void Slides_ReleaseVariants(void) {
 }
 
 void TexturePage_LoadImage(void* imageData, short param2, short param3) {
+    // Port-only: each cell is named after the file and the slide, the way the
+    // inventory icons are (HD/<TREE>/Data/SLIDE/<NN>.webp, system/HdTextures.h).
+    // Taken before anything else reads the buffer, while its checksum holds.
+    char hdKey[160] = "";
+    if (HdTextures_Active() &&
+        (HdTextures_KeyForBuffer(imageData, hdKey, sizeof(hdKey))[0] == '\0' ||
+         strchr(hdKey, '@') != NULL)) {
+        hdKey[0] = '\0';
+    }
+
     ProcessTextureImage(imageData, param2, param3, 0);
 
     // 0x0046d77e tail: parse the TIM again and build one RGBA texture per
@@ -1140,7 +1223,12 @@ void TexturePage_LoadImage(void* imageData, short param2, short param3) {
             }
         }
 
-        MarniCreateTexture(drawW, drawH, 32, rgba, &s_slidesVariantSRV[c]);
+        {
+            char cellKey[180] = "";
+            if (hdKey[0] != '\0') snprintf(cellKey, sizeof(cellKey), "%s/%02d", hdKey, c);
+            HdSourceScope hd(cellKey, drawW, drawH);
+            MarniCreateTexture(drawW, drawH, 32, rgba, &s_slidesVariantSRV[c]);
+        }
         delete[] rgba;
 
         const int slot = SLIDES_TEX_BASE + c;

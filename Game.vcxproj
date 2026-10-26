@@ -124,6 +124,8 @@
     <ClCompile Include="src\system\AssetPath.cpp" />
     <ClCompile Include="src\system\AudioFile.cpp" />
     <ClCompile Include="src\system\PngImage.cpp" />
+    <ClCompile Include="src\system\WebpImage.cpp" />
+    <ClCompile Include="src\system\HdTextures.cpp" />
     <ClCompile Include="src\game\FileLoader.cpp" />
     <ClCompile Include="src\game\DoorSystem.cpp" />
     <ClCompile Include="src\game\GameInit.cpp" />
@@ -148,6 +150,7 @@
     <ClCompile Include="src\game\RoomInit.cpp" />
     <ClCompile Include="src\game\EffectSprites.cpp" />
     <ClCompile Include="src\game\Room.cpp" />
+    <ClCompile Include="src\game\RoomBackgroundWebp.cpp" />
     <ClCompile Include="src\game\RoomEvents.cpp" />
     <ClCompile Include="src\game\CmdFunctions.cpp" />
     <ClCompile Include="src\game\PathTrail.cpp" />
@@ -187,8 +190,15 @@
     <ClCompile Include="src\game\dc\EntityModels.cpp" />
     <ClCompile Include="src\game\dc\ArrangeStages.cpp" />
     <ClCompile Include="src\game\dc\ArrangeSoundRows.cpp" />
+    <ClCompile Include="src\game\saturn\SaturnBattle.cpp" />
+    <ClCompile Include="src\game\saturn\SaturnModels.cpp" />
+    <ClCompile Include="src\game\saturn\SaturnRoomObjects.cpp" />
+    <ClCompile Include="src\game\saturn\SaturnTick.cpp" />
+    <ClCompile Include="src\game\saturn\SaturnTickAnim.cpp" />
+    <ClCompile Include="src\game\saturn\SaturnTyrant.cpp" />
     <ClCompile Include="src\game\Rendering.cpp" />
     <ClCompile Include="src\game\JpnTextTables.cpp" />
+    <ClCompile Include="src\game\HdText.cpp" />
     <ClCompile Include="src\game\PrintText.cpp" />
     <ClCompile Include="src\game\TextureLoader.cpp" />
     <ClCompile Include="src\game\FadeSprite.cpp" />
@@ -199,7 +209,10 @@
     <ClCompile Include="src\marni\MarniInput.cpp" />
     <ClCompile Include="src\marni\MarniXInput.cpp" />
     <ClCompile Include="src\game\SoundSystem.cpp" />
+    <ClCompile Include="src\game\GameOptions.cpp" />
+    <ClCompile Include="src\game\TitleMenuFont.cpp" />
     <ClCompile Include="src\game\TitleScreen.cpp" />
+    <ClCompile Include="src\game\Bonus.cpp" />
     <ClCompile Include="src\game\CharacterSelectionScreen.cpp" />
     <ClCompile Include="src\game\SaveLoadScreen.cpp" />
     <ClCompile Include="src\game\GteMatrix.cpp" />
@@ -222,6 +235,13 @@
     <ClInclude Include="src\game\entities\EntityCommon.h" />
     <ClInclude Include="src\game\entities\Zombie.h" />
     <ClInclude Include="src\system\PngImage.h" />
+    <ClInclude Include="src\system\WebpImage.h" />
+    <ClInclude Include="src\system\HdTextures.h" />
+    <ClInclude Include="src\system\HdTextureHash.h" />
+    <ClInclude Include="src\game\RoomBackgroundWebp.h" />
+    <ClInclude Include="src\third_party\simplewebp.h" />
+    <ClInclude Include="src\third_party\stb_truetype.h" />
+    <ClInclude Include="src\game\HdText.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

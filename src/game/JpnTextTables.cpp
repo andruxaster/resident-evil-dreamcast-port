@@ -85,6 +85,9 @@ static constexpr auto s_gmjp_4CDDF4 = STR_JP(u8"別の薬剤とまぜること�
 static constexpr auto s_gmjp_4CDE07 = STR_JP(u8"ここでは使えない");  // ここでは使えない
 static constexpr auto s_gmjp_4CDE43 = STR_JP(u8"今は使う必要もなさそうだ");  // 今は使う必要もなさそうだ
 
+// [63] Saturn Battle Game opening (port-only) - JPN Saturn GAME5.PRG 0x0609EB37
+static constexpr auto s_gmjp_sat63 = STR_JP(u8"You must defeat\\nall the enemies\\pTand enter into the\\nmysterious zone.\\d\\x30");
+
 unsigned char* global_messages_jpn[64] = {
     (unsigned char*)s_gmjp_4CD730.bytes,      // [  0] /iを取りますか?/c / /q 
     (unsigned char*)s_gmjp_4CD744.bytes,      // [  1] /iを入手した
@@ -149,7 +152,7 @@ unsigned char* global_messages_jpn[64] = {
     (unsigned char*)s_gmjp_4CDE07.bytes,      // [ 60] ここでは使えない
     (unsigned char*)s_gmjp_4CDE07.bytes,      // [ 61] ここでは使えない
     (unsigned char*)s_gmjp_4CDE43.bytes,      // [ 62] 今は使う必要もなさそうだ
-    NULL,                          // [ 63]
+    (unsigned char*)s_gmjp_sat63.bytes,       // [ 63] Saturn Battle Game opening (port-only)
 };
 
 // --------------------------------------------------------------------------

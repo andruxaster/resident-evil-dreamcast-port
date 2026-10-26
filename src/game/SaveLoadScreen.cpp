@@ -12,9 +12,12 @@
 #include "SpriteRenderer.h"
 #include "SFXIds.h"
 #include "PrintText.h"
+#include "HdText.h"      // HdText_SetPrint8x8Size (port-only)
 #include "dc/Items.h"    // lockpick item id (is_lockpick_item)
+#include "saturn/SaturnBattle.h"
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include "../system/AssetPath.h"
 
 extern void logos_state(void);
@@ -37,6 +40,9 @@ typedef struct SaveSlotInfo
     // Director's Cut only: file[0x233], the mode the save was made in
     // (g_BioCard.dcGameMode). The DC colour-codes each slot row by it.
     uint32_t dcGameMode;
+    // Port-only: file[0xA82], the time() the save was written at (0 = the save
+    // predates the stamp, or was written by the F5 debug quick save).
+    uint32_t timestamp;
 } SaveSlotInfo;
 
 typedef enum {
@@ -53,8 +59,11 @@ typedef enum {
 } MenuState;
 
 // Save file constants (the file is 0xA82 = 2690 bytes)
-#define SAVE_SLOT_COUNT      8
-#define SAVE_FILE_SIZE       0xA82
+// Port: 16 slots (the original has 8), shown through a window of
+// SAVE_VISIBLE_ROWS rows that scrolls; the exit entry is the 17th.
+#define SAVE_SLOT_COUNT      16
+#define SAVE_VISIBLE_ROWS    9       // 8 slots + the room the original gave the exit row
+#define SAVE_FILE_SIZE       0xA86   // 0xA82 of the original layout + the port's timestamp
 // The original's 0x800 "block" is one contiguous region (0xbe9620..0xbe9e20)
 // holding g_BioCard plus the input-config globals that follow it. The port
 // models those as separate globals, so the copies below are sized per global
@@ -74,6 +83,11 @@ typedef enum {
 #define OFFSET_SIDEWINDER    0xA00   // 1 byte
 #define OFFSET_COSTUME_VARIANT 0xA01   // 1 byte  (g_bCostumeVariant)
 #define OFFSET_KEY_BACKUP    0xA02   // 128 bytes (g_joyRemapBackupKey)
+#define OFFSET_TIMESTAMP     SAVE_OFFSET_TIMESTAMP   // 4 bytes (port-only, little endian)
+
+// Port-only: the size the HD 8x8 font draws the selected slot's mode +
+// timestamp line at (a fraction of the normal HD size).
+#define SAVE_INFO_HD_TEXT_SIZE 0.7f
 
 // ============================================================================
 // PrintFormattedText encoded data - byte-identical to the original tables at
@@ -510,6 +524,9 @@ void EnsureDirectoryExists(const char* path)
 // ============================================================================
 static unsigned char DcSaveRowColour(unsigned int dcGameMode)
 {
+    if ((dcGameMode & SAVE_MODE_SATURN_FLAG) != 0) {
+        return SAVE_ROW_COLOUR_BLUE;    // a Sega Saturn save
+    }
     if (!g_bDcMode) {
         return 0;                       // the USA build's only colour
     }
@@ -531,10 +548,99 @@ static unsigned char DcSaveRowColour(unsigned int dcGameMode)
 // ============================================================================
 static int SaveSlotLoadBlocked(const SaveSlotInfo* slot)
 {
-    if (g_bDcMode || !slot->hasData) {
+    if (!slot->hasData) {
+        return 0;
+    }
+    // A Saturn save only loads in Saturn mode, and Saturn mode only loads
+    // Saturn saves (OG / DC saves are refused).
+    const int saturnSave = (slot->dcGameMode & SAVE_MODE_SATURN_FLAG) != 0;
+    if (g_bSaturnMode && !saturn_mode_is_borrowed()) {
+        return !saturnSave;
+    }
+    if (saturnSave) {
+        return 1;
+    }
+    if (g_bDcMode) {
         return 0;
     }
     return (slot->dcGameMode & 3) != DC_DIFFICULTY_STANDARD;
+}
+
+// ============================================================================
+// SaveTimestampNow / SaveSlotInfoLine (port-only)
+// The save carries the wall-clock time it was written at, and the load/save
+// screen shows it with the mode under the list.
+// ============================================================================
+unsigned int SaveTimestampNow(void)
+{
+    return (unsigned int)time(NULL);
+}
+
+unsigned int SaveFileTimestamp(const char* path, const char* buffer, int size)
+{
+    unsigned int stamp = 0;
+    if (size >= SAVE_FILE_SIZE) {
+        const unsigned char* tb = (const unsigned char*)buffer + OFFSET_TIMESTAMP;
+        stamp = (unsigned int)tb[0] | ((unsigned int)tb[1] << 8) |
+                ((unsigned int)tb[2] << 16) | ((unsigned int)tb[3] << 24);
+    }
+    if (stamp == 0) {
+        // A save written before the stamp existed: use the file's date.
+        stamp = plat_file_mtime(path);
+    }
+    return stamp;
+}
+
+void SaveModeTimeText(unsigned int dcGameMode, unsigned int timestamp, char* out, size_t outSize)
+{
+    const char* modeName = "Classic Mode";
+    if ((dcGameMode & SAVE_MODE_SATURN_FLAG) != 0) {
+        modeName = "Saturn Mode";
+    } else {
+        switch (dcGameMode & 3) {
+        case DC_DIFFICULTY_TRAINING:      modeName = "DC/Training Mode"; break;
+        case DC_DIFFICULTY_ADVANCED:
+        case DC_DIFFICULTY_ADVANCED_HOLD: modeName = "DC/Advanced Mode"; break;
+        default: break;                  // OG and DC STANDARD
+        }
+    }
+
+    time_t t = (time_t)timestamp;
+    const struct tm* lt = (timestamp != 0) ? localtime(&t) : NULL;
+    if (lt == NULL) {
+        snprintf(out, outSize, "%s", modeName);
+        return;
+    }
+    snprintf(out, outSize, "%s - %02d/%02d/%04d %02d:%02d", modeName,
+             lt->tm_mday, lt->tm_mon + 1, lt->tm_year + 1900,
+             lt->tm_hour, lt->tm_min);
+}
+
+static void SaveSlotInfoLine(const SaveSlotInfo* slot, char* out, size_t outSize)
+{
+    SaveModeTimeText(slot->dcGameMode, slot->timestamp, out, outSize);
+}
+
+// The translucent navy box DebugMenu draws, at a game-space rect.
+static void SaveScreenDrawBox(int gx, int gy, int gw, int gh)
+{
+    static RectDrawDesc box;
+    box.x = gx - g_ScreenOffsetX;
+    box.y = gy - g_ScreenOffsetY;
+    box.w = gw;
+    box.h = gh;
+
+    box.textureId = 0x60000000;         // variant 3 (field 2 + enable bit): black at the level below
+    box.r = 0;
+    box.g = 96;
+    box.b = 0;
+    draw_rect(&box, 100, 1);
+
+    box.textureId = 0x40000000;         // variant 1: semi-transparent tint
+    box.r = 60;                         // all three channels on = a grey wash
+    box.g = 60;
+    box.b = 60;
+    draw_rect(&box, 100, 1);
 }
 
 // ============================================================================
@@ -739,6 +845,13 @@ static void RestoreSaveBlock(const char* fileBuffer, int fileSize)
     memcpy(liveJoyRemap, g_JoyRemapTbl[1], sizeof(liveJoyRemap));
 
     memcpy(g_BioCardData, fileBuffer, sizeof(BioCardLayout));
+
+    // Sega Saturn: a save carries the Battle Game unlock in the card, so the
+    // title screen's third item follows the slot that was loaded. No-op in the
+    // other two modes. The Saturn reads its single save file at the press-start
+    // screen; the PC has eight slots, so the item reflects the one just loaded.
+    saturn_battle_sync_from_card();
+    
     memcpy(g_padRemapSubTable3, fileBuffer + OFFSET_PAD_REMAP,
            sizeof(g_padRemapSubTable3));
     g_controllerConfig = fileBuffer[OFFSET_CONTROLLER_CFG];
@@ -814,10 +927,11 @@ static void RestoreSaveBlock(const char* fileBuffer, int fileSize)
 // ============================================================================
 void LoadSaveGameState(int mode, int flags, int useInkRibbon, int sfxBank, int cutsceneReset)
 {
-    // Save slot info table (9 entries: 8 file slots + 1 exit option)
+    // Save slot info table (16 file slots + 1 exit option)
     SaveSlotInfo save_slots[SAVE_SLOT_COUNT + 1];
     MenuState state = STATE_INIT;
-    int selected_slot = 0;              // current cursor position (0..7 = slots, 8 = exit)
+    int selected_slot = 0;              // current cursor position (0..15 = slots, 16 = exit)
+    int scroll_top = 0;                 // first entry shown in the window
     int confirm_choice = 0;             // 0 = YES, 1 = NO (confirmation dialog)
     int blink_timer = 5;
     int blink_state = 0;                // 0 = cursor visible, 1 = invisible
@@ -855,14 +969,14 @@ void LoadSaveGameState(int mode, int flags, int useInkRibbon, int sfxBank, int c
         {
             state = STATE_IDLE;
 
-            for (int slotIndex = 0; slotIndex < 9; slotIndex++)
+            for (int slotIndex = 0; slotIndex < SAVE_SLOT_COUNT; slotIndex++)
             {
                 sprintf(g_saveFileName, "%ssavedat%d.dat", GetSaveRoot(), slotIndex + 1);
                 FILE* fp = fopen(g_saveFileName, "r");
                 if (fp == NULL) {
                     save_slots[slotIndex].hasData = 0;
                 } else {
-                    ReadSaveFile(g_saveFileName, saveBuffer);
+                    int scanSize = ReadSaveFile(g_saveFileName, saveBuffer);
 
                     save_slots[slotIndex].hasData       = 1;
                     save_slots[slotIndex].characterId   = saveBuffer[OFFSET_CHARACTER_ID];
@@ -870,6 +984,16 @@ void LoadSaveGameState(int mode, int flags, int useInkRibbon, int sfxBank, int c
                     save_slots[slotIndex].stageId       = saveBuffer[OFFSET_STAGE_ID];
                     save_slots[slotIndex].roomId        = saveBuffer[OFFSET_ROOM_ID];
                     save_slots[slotIndex].dcGameMode    = (unsigned char)saveBuffer[OFFSET_DC_MODE];
+                    save_slots[slotIndex].timestamp     = 0;
+                    if (scanSize >= SAVE_FILE_SIZE) {
+                        unsigned char* tb = (unsigned char*)saveBuffer + OFFSET_TIMESTAMP;
+                        save_slots[slotIndex].timestamp = (uint32_t)tb[0] | ((uint32_t)tb[1] << 8) |
+                                                          ((uint32_t)tb[2] << 16) | ((uint32_t)tb[3] << 24);
+                    }
+                    if (save_slots[slotIndex].timestamp == 0) {
+                        // A save written before the stamp existed: use the file's date.
+                        save_slots[slotIndex].timestamp = plat_file_mtime(g_saveFileName);
+                    }
 
                     fclose(fp);
                 }
@@ -895,7 +1019,9 @@ void LoadSaveGameState(int mode, int flags, int useInkRibbon, int sfxBank, int c
                 blink_state = 0;
                 blink_timer = 5;
                 input_delay = 6;
-                if (--selected_slot < 0) selected_slot = 8;
+                if (--selected_slot < 0) selected_slot = SAVE_SLOT_COUNT;
+                if (selected_slot < scroll_top) scroll_top = selected_slot;
+                if (selected_slot > scroll_top + SAVE_VISIBLE_ROWS - 1) scroll_top = selected_slot - (SAVE_VISIBLE_ROWS - 1);
                 state = STATE_INPUT_DELAY;
                 play_sfx(sfxBank, 30);
             }
@@ -905,7 +1031,9 @@ void LoadSaveGameState(int mode, int flags, int useInkRibbon, int sfxBank, int c
                 blink_state = 0;
                 blink_timer = 5;
                 input_delay = 6;
-                if (++selected_slot > 8) selected_slot = 0;
+                if (++selected_slot > SAVE_SLOT_COUNT) selected_slot = 0;
+                if (selected_slot < scroll_top) scroll_top = selected_slot;
+                if (selected_slot > scroll_top + SAVE_VISIBLE_ROWS - 1) scroll_top = selected_slot - (SAVE_VISIBLE_ROWS - 1);
                 state = STATE_INPUT_DELAY;
                 play_sfx(sfxBank, 30);
             }
@@ -1106,9 +1234,10 @@ void LoadSaveGameState(int mode, int flags, int useInkRibbon, int sfxBank, int c
             // string is fully rebuilt below.)
 
             // Consume the ink ribbon. Jill needs the ribbon flag (bit 0x7B),
-            // Chris always spends one when the typewriter offers it.
+            // Chris always spends one when the typewriter offers it. Port: a
+            // console release's Jill always spends one (jill_needs_ink_ribbons).
             if ((useInkRibbon != 0) &&
-                (((g_playerEntityPointer.id & 3) != 1) ||
+                (((g_playerEntityPointer.id & 3) != 1) || jill_needs_ink_ribbons() ||
                  (Flg_ck((int)g_ScenarioFlags, SCENARIO_FLAG_SECOND_PLAYTHROUGH) != 0))) {
                 g_selectedItemId = ITEM_INK_RIBBONS;
                 use_room_action_item();
@@ -1135,6 +1264,11 @@ void LoadSaveGameState(int mode, int flags, int useInkRibbon, int sfxBank, int c
             // zeroed first so the block tail the port does not model
             // (0x43D..0x800) stays deterministic instead of stack garbage.
             memset(fileBuffer, 0, SAVE_FILE_SIZE);
+            // Port: mark a Saturn-mode save in the mode byte so the other modes
+            // refuse it. A Battle Game run borrowed from OG/DC keeps its own mode.
+            if (g_bSaturnMode && !saturn_mode_is_borrowed()) {
+                g_DcGameMode |= SAVE_MODE_SATURN_FLAG;
+            }
             memcpy(fileBuffer + 0x000, g_BioCardData, sizeof(BioCardLayout));
             memcpy(fileBuffer + OFFSET_PAD_REMAP, g_padRemapSubTable3,
                    sizeof(g_padRemapSubTable3));
@@ -1144,6 +1278,12 @@ void LoadSaveGameState(int mode, int flags, int useInkRibbon, int sfxBank, int c
             memcpy(fileBuffer + OFFSET_ROOM_BGM, g_roomBgmState, 0xE0);
             fileBuffer[OFFSET_SIDEWINDER] = (char)g_bPadConnected;
             fileBuffer[OFFSET_COSTUME_VARIANT]   = (char)g_bCostumeVariant;
+            {
+                unsigned int stamp = SaveTimestampNow();
+                for (int b = 0; b < 4; b++) {
+                    fileBuffer[OFFSET_TIMESTAMP + b] = (char)(stamp >> (8 * b));
+                }
+            }
             memcpy(fileBuffer + OFFSET_JOY_BACKUP, g_joyRemapBackupJoy, 0x80);
             memcpy(fileBuffer + OFFSET_KEY_BACKUP, g_joyRemapBackupKey, 0x80);
             FileWrite(g_saveFileName, fileBuffer, SAVE_FILE_SIZE);
@@ -1212,7 +1352,7 @@ void LoadSaveGameState(int mode, int flags, int useInkRibbon, int sfxBank, int c
                 return;
             }
 
-            PrintFormattedText(55, (short)(16 * selected_slot + 45),
+            PrintFormattedText(55, (short)(16 * (selected_slot - scroll_top) + 45),
                                DcSaveRowColour((unsigned int)g_DcGameMode),
                                (unsigned char*)animBuf);
 
@@ -1229,7 +1369,7 @@ void LoadSaveGameState(int mode, int flags, int useInkRibbon, int sfxBank, int c
         // ================================================================
         case STATE_SAVE_ANIM_STEP2:
         {
-            PrintFormattedText(55, (short)(16 * selected_slot + 45),
+            PrintFormattedText(55, (short)(16 * (selected_slot - scroll_top) + 45),
                                DcSaveRowColour((unsigned int)g_DcGameMode),
                                (unsigned char*)animBuf);
 
@@ -1266,7 +1406,19 @@ void LoadSaveGameState(int mode, int flags, int useInkRibbon, int sfxBank, int c
         // Positions from disassembly: slot X=55, save count X=103, location X=127
         // ================================================================
         int y = 45;
-        for (int i = 0; i < 8; i++, y += 16) {
+        for (int row = 0; row < SAVE_VISIBLE_ROWS; row++, y += 16) {
+            const int i = scroll_top + row;
+            if (i == SAVE_SLOT_COUNT) {
+                // Exit option — assembly draws two parts at same position:
+                // 1. the verb, in the first cells of the line
+                // 2. the suffix, whose leading spaces skip over the verb
+                // Result: "DO NOT SAVE"/"DO NOT LOAD", or "セーブしない"/"ロードしない"
+                // on the Japanese screen, which puts the verb first and the negation
+                // after it (0x004b1008 + 0x004b0ff8).
+                PrintFormattedText(55, (short)y, 0, L.exitNames[mode]);
+                PrintFormattedText(55, (short)y, 0, L.exitSuffix);
+                break;
+            }
             if ((state == STATE_SAVE_ANIM_STEP1 || state == STATE_SAVE_ANIM_STEP2) && selected_slot == i)
                 continue; // handled separately during animation
 
@@ -1314,16 +1466,25 @@ void LoadSaveGameState(int mode, int flags, int useInkRibbon, int sfxBank, int c
             }
         }
 
-        // Print exit option — assembly draws two parts at same position:
-        // 1. the verb, in the first cells of the line
-        // 2. the suffix, whose leading spaces skip over the verb
-        // Result: "DO NOT SAVE"/"DO NOT LOAD", or "セーブしない"/"ロードしない"
-        // on the Japanese screen, which puts the verb first and the negation
-        // after it (0x004b1008 + 0x004b0ff8).
-        {
-            int y = 45 + SAVE_SLOT_COUNT * 16;
-            PrintFormattedText(55, (short)y, 0, L.exitNames[mode]);
-            PrintFormattedText(55, (short)y, 0, L.exitSuffix);
+        // Port: mode + timestamp of the selected slot, and its position in the list.
+        if (state == STATE_IDLE || state == STATE_INPUT_DELAY ||
+            state == STATE_SAVE_SLOT_SELECTED || state == STATE_LOAD_SLOT_SELECTED) {
+            sprintf(PRINT_TEXT_BUFFER, "%02d/%02d",
+                    selected_slot < SAVE_SLOT_COUNT ? selected_slot + 1 : SAVE_SLOT_COUNT,
+                    SAVE_SLOT_COUNT);
+            PrintText8x8(262, 13, 3, 0);
+
+            if (selected_slot < SAVE_SLOT_COUNT && save_slots[selected_slot].hasData) {
+                char info[64];
+                SaveSlotInfoLine(&save_slots[selected_slot], info, sizeof(info));
+                SaveScreenDrawBox(20, 203, 280, 20);
+                int px = 20 + (280 - (int)strlen(info) * 8) / 2;
+                sprintf(PRINT_TEXT_BUFFER, "%s", info);
+                // The HD font draws it smaller, towards the box's centre.
+                HdText_SetPrint8x8Size(SAVE_INFO_HD_TEXT_SIZE, HD_TEXT_ANCHOR_CENTRE);
+                PrintText8x8((short)px, 209, 0, 0);       // white for every mode
+                HdText_SetPrint8x8Size(1.0f, HD_TEXT_ANCHOR_LEFT);
+            }
         }
 
         // Print header — assembly draws two parts at same position:
@@ -1340,12 +1501,12 @@ void LoadSaveGameState(int mode, int flags, int useInkRibbon, int sfxBank, int c
         {
             if (state == STATE_CONFIRM_OVERWRITE) {
                 // State 5: draw slot cursor (always visible) + confirm cursor (blinks)
-                DrawSaveCursor(L.cursorX, (short)(45 + selected_slot * 16), 0);
+                DrawSaveCursor(L.cursorX, (short)(45 + (selected_slot - scroll_top) * 16), 0);
                 int confirmX = confirm_choice * L.confirmStride + 118;
                 DrawSaveCursor((short)confirmX, 209, blink_state);
             } else {
                 // States 1-4,9: cursor at slot position, blinks with blinkToggle
-                DrawSaveCursor(L.cursorX, (short)(45 + selected_slot * 16), blink_state);
+                DrawSaveCursor(L.cursorX, (short)(45 + (selected_slot - scroll_top) * 16), blink_state);
             }
         }
 

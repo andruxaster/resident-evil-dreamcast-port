@@ -14,7 +14,11 @@ PS1 audio from the asset migrator (WAV format) is supported: its loop region
 ('smpl') and PS1 marker ('mark') are carried into the compressed file.
 
 --bgm-rate HZ resamples only the music (Bgm_*.wav) to HZ, loop points scaled
-with it. PS1 music is 44.1 kHz stereo - ~2.7 MB of RAM per minute even as IMA;
+with it. --max-rate HZ resamples EVERY file above HZ (music, effects, voices): the
+Dreamcast mixer runs at 22050 Hz, and a 44.1 / 37.8 kHz bank played there is
+decimated without a filter, which aliases - and costs twice the space.
+--bgm-gain DB changes the music's level (e.g. -7 to match the PC
+release's music, which is that much quieter than the PS1 rips). PS1 music is 44.1 kHz stereo - ~2.7 MB of RAM per minute even as IMA;
 --bgm-rate 22050 halves that and keeps what makes it better than the PC
 music (instruments, stereo, reverb, intro + loop).
 Originals are MOVED to --backup (default: <data-dir>/../audio_wav_backup),
@@ -90,7 +94,7 @@ def wav_info(path):
         cid, clen = data[off:off + 4], struct.unpack_from("<I", data, off + 4)[0]
         if cid == b"fmt " and clen >= 2:
             tag = struct.unpack_from("<H", data, off + 8)[0]
-        elif cid == b"mark":
+        elif cid in (b"re1p", b"mark"):
             mark = True
         off += 8 + clen + (clen & 1)
     return tag, mark
@@ -106,7 +110,7 @@ def targets(root):
                 yield os.path.join(dirpath, name)
 
 
-def convert(path, root, backup, bgm_rate):
+def convert(path, root, backup, bgm_rate, bgm_gain=0.0, max_rate=0):
     with open(path, "rb") as f:
         src = f.read()
     ch_list = chunks(src)
@@ -117,15 +121,25 @@ def convert(path, root, backup, bgm_rate):
     if tag != 1:
         return ("skip", path, "already compressed" if tag == 0x11 else "format 0x%x" % (tag or 0))
     old_rate = struct.unpack_from("<I", fmt, 4)[0]
-    resample = bgm_rate and os.path.basename(path).lower().startswith("bgm") and old_rate > bgm_rate
-    keep = [(cid, body) for cid, body in ch_list if cid in (b"smpl", b"mark")]
+    new_rate = old_rate
+    if bgm_rate and os.path.basename(path).lower().startswith("bgm"):
+        new_rate = min(new_rate, bgm_rate)
+    if max_rate:
+        new_rate = min(new_rate, max_rate)
+    resample = new_rate < old_rate
+    # 're1p' is the asset migrator's PS1 marker: without it the game ignores
+    # the loop region and plays the file the PC way (whole-buffer loop).
+    keep = [(cid, body) for cid, body in ch_list if cid in (b"smpl", b"re1p", b"mark")]
+    is_bgm = os.path.basename(path).lower().startswith("bgm")
     before = len(src)
     fd, tmp = tempfile.mkstemp(suffix=".wav", dir=os.path.dirname(path))
     os.close(fd)
     try:
         cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", path]
+        if is_bgm and bgm_gain:
+            cmd += ["-af", "volume=%gdB" % bgm_gain]
         if resample:
-            cmd += ["-ar", str(bgm_rate)]
+            cmd += ["-ar", str(new_rate)]
         r = subprocess.run(cmd + ["-c:a", "adpcm_ima_wav", tmp], capture_output=True, text=True)
         if r.returncode != 0 or (wav_info(tmp) or (None,))[0] != 0x11:
             os.unlink(tmp)
@@ -137,7 +151,7 @@ def convert(path, root, backup, bgm_rate):
             frames = ima_frames(chunks(bytes(out)))
             for cid, body in keep:
                 if cid == b"smpl" and resample:
-                    body = scaled_smpl(body, old_rate, bgm_rate, frames)
+                    body = scaled_smpl(body, old_rate, new_rate, frames)
                 out += cid + struct.pack("<I", len(body)) + body + (b"\0" if len(body) & 1 else b"")
             struct.pack_into("<I", out, 4, len(out) - 8)
             with open(tmp, "wb") as f:
@@ -172,6 +186,10 @@ def main():
     ap.add_argument("--restore", action="store_true")
     ap.add_argument("--bgm-rate", type=int, default=0,
                     help="resample Bgm_*.wav above this rate down to it (e.g. 22050)")
+    ap.add_argument("--max-rate", type=int, default=0,
+                    help="resample every file above this rate down to it (e.g. 22050)")
+    ap.add_argument("--bgm-gain", type=float, default=0.0,
+                    help="level change for Bgm_*.wav in dB (e.g. -7)")
     a = ap.parse_args()
     root = os.path.abspath(a.data)
     backup = os.path.abspath(a.backup or os.path.join(os.path.dirname(root), "audio_wav_backup"))
@@ -186,7 +204,7 @@ def main():
     before = after = 0
     skipped, failed = [], []
     with cf.ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
-        for status, path, extra in ex.map(lambda p: convert(p, root, backup, a.bgm_rate), files):
+        for status, path, extra in ex.map(lambda p: convert(p, root, backup, a.bgm_rate, a.bgm_gain, a.max_rate), files):
             if status == "ok":
                 before += extra[0]
                 after += extra[1]

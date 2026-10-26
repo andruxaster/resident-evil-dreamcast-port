@@ -29,6 +29,7 @@
 #include "TmdRenderer.h"
 #include "SpriteRenderer.h"
 #include "../Globals.h"
+#include "saturn/SaturnRoomObjects.h"   // saturn_omodel_has_no_model
 #include "../marni/MarniDX.h"
 #include "../marni/MarniSystem.h"
 #include "../marni/Marni3DObject.h"
@@ -640,12 +641,20 @@ void FlushTmdObjects(void)
                     // bit at +0x80 at runtime; the vertex buffer is built once
                     // at load and never re-synced, so an unlit entry with a
                     // tinted colour reads it here (the wounds on the corpse).
-                    // Untinted entries keep 0 there and fall back to the
-                    // buffered colour.
+                    //
+                    // The original reads +0x5C..+0x64 unconditionally here
+                    // (0x0044704c). Every TMD slot object holds 1.0f there from
+                    // load (Marni3DObject's store loop), so all-zero is a REAL
+                    // black tint, not "untinted": the Super Tyrant's rocket
+                    // death tints its scattered limbs with colour 0
+                    // (em_scd_behavior_rocket_death, frame 8) and they must
+                    // draw black. Only a complex-pool entry (slot == NULL)
+                    // keeps the zero fallback - its objData+0x5C is the
+                    // trail's UV words, not a colour.
                     float tr = *(float*)(e->objData + 0x5C);
                     float tg = *(float*)(e->objData + 0x60);
                     float tb = *(float*)(e->objData + 0x64);
-                    if (tr != 0.0f || tg != 0.0f || tb != 0.0f) {
+                    if (e->slot != NULL || tr != 0.0f || tg != 0.0f || tb != 0.0f) {
                         cr[v] = tr; cg[v] = tg; cb[v] = tb;
                     } else {
                         cr[v] = vtx[6]; cg[v] = vtx[7]; cb[v] = vtx[8];
@@ -1546,6 +1555,10 @@ void render_room_objects(void)
             unsigned char* obj = (pass == 0)
                 ? (unsigned char*)g_omodel_table[i]
                 : (unsigned char*)g_item_model_table[i];
+
+            // Saturn: a slot the Saturn builds no model for is never drawn
+            // (GAME4 0x06055C5C tests the registry model handle).
+            if (pass == 0 && g_bSaturnMode && saturn_omodel_has_no_model(i)) continue;
 
             // Visible (bit 0) and with a bound model (AnimSlot ptr at +0x14).
             if ((obj != NULL) && ((*obj & 1) != 0) && (*(int*)(obj + 0x14) != 0)) {

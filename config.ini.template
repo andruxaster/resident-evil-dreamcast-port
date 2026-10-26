@@ -48,6 +48,18 @@ Ps1EndingCredits=0
 ; staff rolls, DMF and DME) be skipped with the usual buttons like any other FMV.
 SkipUnskippableFmv=0
 
+[Textures]
+; 1 = use the high-resolution replacements in the HD/ folder beside USA/: a file
+; HD/<hash>.webp is drawn in place of the texture whose pixels hash to that
+; name, at whatever resolution it has. Costs nothing while the folder does not
+; exist. A model's skin can also be named after its .EMD:
+; HD/USA/ENEMY/EM1010.webp. See docs/HD_TEXTURES.md.
+HdTextures=1
+; 1 = write every texture the game uploads to HD/dump/<hash>.png, once each,
+; and each model skin to HD/dump/<TREE>/<path>.png - the originals a
+; replacement set is made from. Leave it off for normal play.
+DumpTextures=0
+
 [Debug]
 ; Master switch for the port-added debug features: F1 debug menu, F6
 ; texture viewer, F8 collision overlay. 0 = off, 1 = on.

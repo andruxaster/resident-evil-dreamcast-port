@@ -7,27 +7,29 @@ class QCheckBox;
 class QComboBox;
 class QLineEdit;
 class RunPanel;
+class BackgroundFormatRow;
+class FfmpegRow;
 
 class DcAssetsTab : public QWidget {
     Q_OBJECT
 public:
-    explicit DcAssetsTab(QWidget* parent = nullptr);
+    // `target` is the window-wide target game folder edit and `backgrounds` the
+    // window-wide background format row (both owned by MainWindow),
+    // `ffmpeg` the window-wide ffmpeg location.
+    explicit DcAssetsTab(QLineEdit* target, BackgroundFormatRow* backgrounds, FfmpegRow* ffmpeg,
+                         QWidget* parent = nullptr);
 
 private slots:
     void onBrowseImage();
-    void onBrowseTarget();
-    void onBrowseFfmpeg();
-    void onDetectFfmpeg();
 
 private:
-    void syncEnabled();
-
     QLineEdit* m_image = nullptr;
-    QLineEdit* m_target = nullptr;
+    QLineEdit* m_target = nullptr;  // shared, not owned
+    BackgroundFormatRow* m_backgrounds = nullptr;  // shared, not owned
     QComboBox* m_base = nullptr;
     QCheckBox* m_convert = nullptr;
     QCheckBox* m_subs = nullptr;
     QCheckBox* m_verify = nullptr;
-    QLineEdit* m_ffmpeg = nullptr;
+    FfmpegRow* m_ffmpeg = nullptr;  // shared, not owned
     RunPanel* m_run = nullptr;
 };

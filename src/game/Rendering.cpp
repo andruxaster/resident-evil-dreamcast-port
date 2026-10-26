@@ -6,8 +6,10 @@
 #include "../marni/MarniSystem.h"
 #include "../marni/PSXTexture.h"
 #include "../system/AssetPath.h"
+#include "../system/HdTextures.h"   // HdBufferScope (port-only)
 #include "dc/Items.h"    // lockpick item id (is_lockpick_item)
 #include "SpriteRenderer.h"
+#include "HdText.h"         // HD 8x14 glyphs (port-only)
 #include "TmdRenderer.h"
 #include <cstdlib>
 #include <cstdio>
@@ -43,11 +45,66 @@ struct PendingSprite {
     MarniHandle tex;
     BOOL valid;
     unsigned int depth;   // OT depth sort value (lower = closer = on top)
+    // Port-only: an HD 8x14 glyph (HdText_Glyph14) - its id, -1 for any other
+    // sprite - and the game-space cell the sheet would have drawn, which
+    // hd14_layout_pending turns into x/y/w/h before the sort.
+    int hdGlyph;
+    float cellX, cellY;
 };
 static PendingSprite g_pendingSprites[MAX_PENDING_SPRITES];
 static int g_pendingSpriteCount = 0;
 
 MarniHandle g_displayImageSRV = MARNI_NULL_HANDLE;
+
+// The vertex colour AddTintSprite gives a font sprite: the CLUT-row tint, the
+// brightness fade, or the shadow pass's translucent black.
+static DWORD tint_sprite_color(const TextureDesc* texture, unsigned short brightness)
+{
+    // Calculate RGB from tint values — cast to unsigned int first to avoid overflow
+    unsigned int r = ((unsigned int)(texture->colorMulR & 0xFF)) * 2; if (r > 255) r = 255;
+    unsigned int g = ((unsigned int)(texture->colorMulG & 0xFF)) * 2; if (g > 255) g = 255;
+    unsigned int b = ((unsigned int)(texture->colorMulB & 0xFF)) * 2; if (b > 255) b = 255;
+
+    // CLUT-tint table (original AddTintSprite 0x0046e0a0): clutY minus
+    // the font CLUT base (0x1E0, set by ProcessTextureImage bank 0x1E) selects
+    // an RGB tint multiplier — 0 white, 1 green (message item names), 2 red,
+    // 3 gray, anything else yellow. CLUT 8 (the PrintText shadow row 0x1E8)
+    // maps to 1 like the original. The message renderer sets 0x1E1 around an
+    // item name, which is what turns "INK RIBBON" green.
+    int clutTint = (int)texture->clutY - 0x1E0;
+    if (clutTint == 8) clutTint = 1;
+    switch (clutTint) {
+    case 0:  break;                       // white (default)
+    case 1:  r = 0; g = 255; b = 0; break;       // green
+    case 2:  r = 255; g = 0; b = 0; break;       // red
+    case 3:  r = 204; g = 204; b = 204; break;   // gray (0.8)
+    case 5:  r = 64; g = 128; b = 255; break;    // blue (port-only: Saturn save rows)
+    default: r = 255; g = 255; b = 0; break;     // yellow
+    }
+
+    DWORD color;
+    if (texture->colorMulR == 0 && texture->colorMulG == 0 && texture->colorMulB == 0) {
+        // Shadow pass: semi-transparent black (brightness controls alpha)
+        unsigned int a = ((unsigned int)brightness * 255) / 30;
+        if (a > 255) a = 255;
+        color = (a << 24) | (0 << 16) | (0 << 8) | 0;
+    } else {
+        // Text pass: opaque color, brightness dims RGB (original PS1 CLUT-based dimming)
+        unsigned int brightnessScale = ((unsigned int)brightness * 255) / 30;
+        if (brightnessScale > 255) brightnessScale = 255;
+        // The original AddTintSprite (0x0046e0a0) collapses fade 2 -> 0 before
+        // the draw, so 0 and 2 are the SAME full-brightness render. The
+        // room-4110 special case (stage 3 room 0x11 cams 4/0: message glyphs,
+        // yes/no cursor, PrintText8x14) passes 0; without this it scaled the
+        // RGB to black and every message glyph in that room rendered black.
+        if (brightness == 0 || brightness == 2) brightnessScale = 255;
+        r = (r * brightnessScale) / 255;
+        g = (g * brightnessScale) / 255;
+        b = (b * brightnessScale) / 255;
+        color = (255u << 24) | (r << 16) | (g << 8) | b;
+    }
+    return color;
+}
 
 // ============================================================================
 // AddTintSprite (0x0046e0a0)
@@ -116,48 +173,7 @@ int AddTintSprite(TextureDesc* texture, unsigned short brightness)
     float u1 = (float)(texUBase + texture->width) / texW_f;
     float v1 = (float)(texture->texV + texture->height) / texH_f;
 
-    // Calculate RGB from tint values — cast to unsigned int first to avoid overflow
-    unsigned int r = ((unsigned int)(texture->colorMulR & 0xFF)) * 2; if (r > 255) r = 255;
-    unsigned int g = ((unsigned int)(texture->colorMulG & 0xFF)) * 2; if (g > 255) g = 255;
-    unsigned int b = ((unsigned int)(texture->colorMulB & 0xFF)) * 2; if (b > 255) b = 255;
-
-    // CLUT-tint table (original AddTintSprite 0x0046e0a0): clutY minus
-    // the font CLUT base (0x1E0, set by ProcessTextureImage bank 0x1E) selects
-    // an RGB tint multiplier — 0 white, 1 green (message item names), 2 red,
-    // 3 gray, anything else yellow. CLUT 8 (the PrintText shadow row 0x1E8)
-    // maps to 1 like the original. The message renderer sets 0x1E1 around an
-    // item name, which is what turns "INK RIBBON" green.
-    int clutTint = (int)texture->clutY - 0x1E0;
-    if (clutTint == 8) clutTint = 1;
-    switch (clutTint) {
-    case 0:  break;                       // white (default)
-    case 1:  r = 0; g = 255; b = 0; break;       // green
-    case 2:  r = 255; g = 0; b = 0; break;       // red
-    case 3:  r = 204; g = 204; b = 204; break;   // gray (0.8)
-    default: r = 255; g = 255; b = 0; break;     // yellow
-    }
-
-    DWORD color;
-    if (texture->colorMulR == 0 && texture->colorMulG == 0 && texture->colorMulB == 0) {
-        // Shadow pass: semi-transparent black (brightness controls alpha)
-        unsigned int a = ((unsigned int)brightness * 255) / 30;
-        if (a > 255) a = 255;
-        color = (a << 24) | (0 << 16) | (0 << 8) | 0;
-    } else {
-        // Text pass: opaque color, brightness dims RGB (original PS1 CLUT-based dimming)
-        unsigned int brightnessScale = ((unsigned int)brightness * 255) / 30;
-        if (brightnessScale > 255) brightnessScale = 255;
-        // The original AddTintSprite (0x0046e0a0) collapses fade 2 -> 0 before
-        // the draw, so 0 and 2 are the SAME full-brightness render. The
-        // room-4110 special case (stage 3 room 0x11 cams 4/0: message glyphs,
-        // yes/no cursor, PrintText8x14) passes 0; without this it scaled the
-        // RGB to black and every message glyph in that room rendered black.
-        if (brightness == 0 || brightness == 2) brightnessScale = 255;
-        r = (r * brightnessScale) / 255;
-        g = (g * brightnessScale) / 255;
-        b = (b * brightnessScale) / 255;
-        color = (255u << 24) | (r << 16) | (g << 8) | b;
-    }
+    const DWORD color = tint_sprite_color(texture, brightness);
 
     PendingSprite* spr = &g_pendingSprites[g_pendingSpriteCount];
     spr->x = screenX;
@@ -171,7 +187,57 @@ int AddTintSprite(TextureDesc* texture, unsigned short brightness)
     spr->color = color;
     spr->tex = texHandle;
     spr->valid = TRUE;
+    spr->hdGlyph = -1;
     spr->depth = (unsigned int)brightness * 16 + 0x1C2;  // OT depth: higher=further behind
+
+    // Port-only: a 14-row cell of the font sheet that the HD 8x14 font has a
+    // character for (HdText.h) is drawn from its atlas instead.
+    if (texture->texturePage != 1) {
+        const int glyph = HdText_Glyph14(texUBase, texture->texV, texture->width, texture->height);
+        if (glyph == HD_TEXT_BLANK14) return 1;   // a space: nothing to draw
+        if (glyph >= 0) {
+            spr->hdGlyph = glyph;
+            spr->cellX = gameX;
+            spr->cellY = gameY;
+            spr->tex = (MarniHandle)HdText_Glyph14Texture();
+        }
+    }
+
+    g_pendingSpriteCount++;
+    return 1;
+}
+
+// ============================================================================
+// AddTintSpriteRect (port-only)
+// AddTintSprite for a sprite that is not a cell of a font page: a glyph of the
+// HD 8x8 font (HdText.cpp), at a fractional game position and size, sampling
+// `tex` at the given coordinates. Colour, tint and depth as AddTintSprite;
+// gameX / gameY are in the space PrintText8x8's x / y are.
+// ============================================================================
+int AddTintSpriteRect(TextureDesc* texture, unsigned short brightness,
+                      float gameX, float gameY, float w, float h,
+                      float u0, float v0, float u1, float v1, MarniHandle tex)
+{
+    if (g_pendingSpriteCount >= MAX_PENDING_SPRITES) return 0;
+    if (tex == MARNI_NULL_HANDLE) return 0;
+
+    float scaleX, scaleY;
+    MarniGetRenderScale(&scaleX, &scaleY);
+
+    PendingSprite* spr = &g_pendingSprites[g_pendingSpriteCount];
+    spr->x = gameX * scaleX;
+    spr->y = gameY * scaleY;
+    spr->w = w * scaleX;
+    spr->h = h * scaleY;
+    spr->u0 = u0;
+    spr->v0 = v0;
+    spr->u1 = u1;
+    spr->v1 = v1;
+    spr->color = tint_sprite_color(texture, brightness);
+    spr->tex = tex;
+    spr->valid = TRUE;
+    spr->hdGlyph = -1;
+    spr->depth = (unsigned int)brightness * 16 + 0x1C2;  // as AddTintSprite
 
     g_pendingSpriteCount++;
     return 1;
@@ -295,6 +361,7 @@ void draw_rect(RectDrawDesc* rect, int blend, int flags)
     spr->color = color;
     spr->tex = srv;
     spr->valid = TRUE;
+    spr->hdGlyph = -1;
     // Depth: higher value = further back (drawn first).
     // In original OT: flags==0 → blend+450, else → blend*16+500
     spr->depth = (flags == 0) ? ((unsigned int)blend + 450) : ((unsigned int)blend * 16 + 500);
@@ -332,9 +399,50 @@ void QueueTexturedSprite(float gameX, float gameY, float gameW, float gameH,
     spr->color = 0xFFFFFFFF;
     spr->tex = tex;
     spr->valid = TRUE;
+    spr->hdGlyph = -1;
     spr->depth = depth;
 
     g_pendingSpriteCount++;
+}
+
+// ============================================================================
+// hd14_layout_pending (port-only)
+// Places the queued HD 8x14 glyphs (AddTintSprite) while the queue is still in
+// the order the text was drawn in: HdText_Layout14 sets each run of letters at
+// the font's own spacing. Called before the depth sort reorders the queue.
+// ============================================================================
+static HdTextGlyphSprite s_hd14Layout[MAX_PENDING_SPRITES];
+static int s_hd14LayoutIndex[MAX_PENDING_SPRITES];
+
+static void hd14_layout_pending(void)
+{
+    int n = 0;
+    for (int i = 0; i < g_pendingSpriteCount; i++) {
+        const PendingSprite& p = g_pendingSprites[i];
+        if (!p.valid || p.hdGlyph < 0) continue;
+        HdTextGlyphSprite& g = s_hd14Layout[n];
+        g.id = p.hdGlyph;
+        g.joins = (n > 0 && s_hd14LayoutIndex[n - 1] == i - 1);
+        g.cellX = p.cellX;
+        g.cellY = p.cellY;
+        s_hd14LayoutIndex[n++] = i;
+    }
+    if (n == 0) return;
+    HdText_Layout14(s_hd14Layout, n);
+    float scaleX, scaleY;
+    MarniGetRenderScale(&scaleX, &scaleY);
+    for (int k = 0; k < n; k++) {
+        PendingSprite& p = g_pendingSprites[s_hd14LayoutIndex[k]];
+        const HdTextGlyphSprite& g = s_hd14Layout[k];
+        p.x = g.x * scaleX;
+        p.y = g.y * scaleY;
+        p.w = g.w * scaleX;
+        p.h = g.h * scaleY;
+        p.u0 = g.u0;
+        p.v0 = g.v0;
+        p.u1 = g.u1;
+        p.v1 = g.v1;
+    }
 }
 
 // ============================================================================
@@ -392,6 +500,8 @@ void FrameRateGovernor(void)
             MarniClear();
 
             FUN_0040a8f0(NULL);
+
+            hd14_layout_pending();
 
             // Sort pending sprites by depth (descending: high depth first = behind, low depth last = on top)
             for (int i = 0; i < g_pendingSpriteCount - 1; i++) {
@@ -612,6 +722,7 @@ void OT_InsertPrimitive(void* prim, unsigned int depth)
     for (int i = g_pendingSpriteCount; i > 0; i--) {
         g_pendingSprites[i] = g_pendingSprites[i - 1];
     }
+    g_pendingSprites[0].hdGlyph = -1;
     g_pendingSprites[0].x = 0;
     g_pendingSprites[0].y = 0;
     g_pendingSprites[0].w = (float)lw * scaleX;
@@ -797,7 +908,8 @@ int display_texture(TextureDesc* texture, unsigned short depth, int slot, int pa
     cmd->type = 10;
     cmd->sortClass = sortClass;
 
-    cmd->spriteFlags = SpriteBuildFlags(texture->flags);
+    cmd->spriteFlags = (sortClass == SPRITE_CLASS_NORMAL)
+        ? SpriteBuildMenuFlags(texture->flags) : SpriteBuildFlags(texture->flags);
 
     cmd->r = (float)texture->colorMulR * g_ColorScaleFactor;
     cmd->g = (float)texture->colorMulG * g_ColorScaleFactor;
@@ -924,7 +1036,8 @@ static int AddSpriteEx_Core(TextureDesc* texture, unsigned short depth, int slot
     cmd->type = 10;
     cmd->sortClass = sortClass;
 
-    cmd->spriteFlags = SpriteBuildFlags(texture->flags);
+    cmd->spriteFlags = (sortClass == SPRITE_CLASS_NORMAL)
+        ? SpriteBuildMenuFlags(texture->flags) : SpriteBuildFlags(texture->flags);
 
     cmd->r = (float)texture->colorMulR * g_ColorScaleFactor;
     cmd->g = (float)texture->colorMulG * g_ColorScaleFactor;
@@ -1002,6 +1115,26 @@ int SubmitEffectSprite_Ex(TextureDesc* texture, unsigned short fade, int slot,
 }
 
 // ============================================================================
+// display_image_to_rgba (port-only)
+// The pixels display_image uploads for a 16-bit image, as its own step: the HD
+// texture layer names a texture by these exact bytes, and the room prefetch
+// (room_hd_prefetch) has to produce the same name before the image is shown.
+//
+// Every pixel is opaque - see the note in display_image.
+// ============================================================================
+void display_image_to_rgba(const void* buffer, int pixelCount, unsigned int* rgba)
+{
+    const unsigned short* src = (const unsigned short*)buffer;
+    for (int i = 0; i < pixelCount; i++) {
+        unsigned short px = src[i];
+        unsigned char r = ((px >> 0)  & 0x1F) * 255 / 31;
+        unsigned char g = ((px >> 5)  & 0x1F) * 255 / 31;
+        unsigned char b = ((px >> 10) & 0x1F) * 255 / 31;
+        rgba[i] = (0xFFu << 24) | (b << 16) | (g << 8) | r;
+    }
+}
+
+// ============================================================================
 // display_image (0x00470770)
 // Loads raw 16-bit PS1 pixel data and creates a D3D11 texture + SRV.
 // ============================================================================
@@ -1015,7 +1148,6 @@ void display_image(int slot, void* buffer, int width, int height)
         g_displayImageSRV = MARNI_NULL_HANDLE;
     }
 
-    unsigned short* src = (unsigned short*)buffer;
     int pixelCount = width * height;
     unsigned int* rgba = (unsigned int*)malloc(pixelCount * 4);
     if (rgba == NULL) return;
@@ -1033,16 +1165,50 @@ void display_image(int slot, void* buffer, int width, int height)
     // shadow. Keying those transparent let VTable_Clear's clear colour — which
     // is (0, 0, 0.05), not pure black, and is overridable via g_debugClearR/G/B —
     // bleed through every dark area of every background as a blue lift.
-    for (int i = 0; i < pixelCount; i++) {
-        unsigned short px = src[i];
-        unsigned char r = ((px >> 0)  & 0x1F) * 255 / 31;
-        unsigned char g = ((px >> 5)  & 0x1F) * 255 / 31;
-        unsigned char b = ((px >> 10) & 0x1F) * 255 / 31;
-        rgba[i] = (0xFFu << 24) | (b << 16) | (g << 8) | r;
-    }
+    display_image_to_rgba(buffer, pixelCount, rgba);
 
+    // Port-only: a full-screen picture straight from a file (title.pix,
+    // type00.tim ...) is named after it (HdTextures.h); a room background's
+    // own key, set by the caller, wins.
+    HdBufferScope hdSource(buffer);
     MarniCreateTexture(width, height, 32, rgba, &g_displayImageSRV);
     free(rgba);
+}
+
+// ============================================================================
+// display_image_rgba (port-only, no original address)
+// display_image for a picture that is already RGBA8 - a room background read
+// from a .webp (RoomBackgroundWebp.cpp). `texWidth` x `texHeight` is what the
+// file holds and may be any size; `width` x `height` is the logical image the
+// game believes it is showing, exactly what display_image would have been
+// given. The background quad covers the screen in normalised UVs
+// (OT_InsertPrimitive), so the two never have to agree.
+//
+// Like display_image, every pixel is taken as it is: the alpha the file
+// carries is ignored by nothing here, so the caller hands over opaque pixels.
+// ============================================================================
+void display_image_rgba(int slot, const void* rgba, int texWidth, int texHeight,
+                        int width, int height)
+{
+    (void)slot;
+    g_DisplayImageWidth = width;
+    g_DisplayImageHeight = height;
+
+    if (g_displayImageSRV != MARNI_NULL_HANDLE) {
+        Marni_DX()->DestroyTexture(g_displayImageSRV);
+        g_displayImageSRV = MARNI_NULL_HANDLE;
+    }
+    if (rgba == NULL || texWidth <= 0 || texHeight <= 0) return;
+
+    // A native-size picture takes the hooked upload, so it is dumped and can be
+    // replaced by hash exactly like the same picture out of a .pak - a lossless
+    // .webp decodes to the very pixels display_image builds. Anything larger is
+    // the replacement already.
+    if (texWidth == width && texHeight == height) {
+        MarniCreateTexture(texWidth, texHeight, 32, rgba, &g_displayImageSRV);
+    } else {
+        MarniCreateTextureRaw(texWidth, texHeight, rgba, &g_displayImageSRV);
+    }
 }
 
 // ============================================================================

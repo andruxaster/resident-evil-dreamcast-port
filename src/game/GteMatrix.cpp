@@ -9,6 +9,7 @@
 //  get_matrix_t (0x0040a9c0)
 #include "../Globals.h"
 #include "../platform/types.h"
+#include "saturn/SaturnTick.h"   // the Tick's stretching arm (rotate_entity)
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -512,18 +513,55 @@ void fp_lerp(SVECTOR* current, SVECTOR* target, int weightCurrent, int weightTar
 }
 
 // ============================================================================
-// MulMatrix0 (0x00409fb0)
-// 3x3 matrix multiply: m2 = m0 * m1 (rotation only, 4.12 fixed-point)
+// GteMulMatrix14 (0x00440e80)
+// c = a * b on three int[9] row-major matrices at 14-bit amplitude. Each of
+// the three products is truncated toward zero by its own >> 14 before the sum.
+// The multiplies are 32-bit IMULs in the original; the product is formed in 64
+// bits and narrowed so a wrap stays a wrap without signed-overflow UB.
 // ============================================================================
-MATRIX* MulMatrix0(MATRIX* m0, MATRIX* m1, MATRIX* m2)
+static void GteMulMatrix14(const int* a, const int* b, int* c)
 {
     for (int i = 0; i < 3; i++) {
         for (int j = 0; j < 3; j++) {
-            int val = GteFixedMul12((int)m0->m[i][0], (int)m1->m[0][j]) +
-                      GteFixedMul12((int)m0->m[i][1], (int)m1->m[1][j]) +
-                      GteFixedMul12((int)m0->m[i][2], (int)m1->m[2][j]);
-            m2->m[i][j] = (short)val;
+            int sum = 0;
+            for (int k = 0; k < 3; k++) {
+                int p = (int)((long long)a[i * 3 + k] * (long long)b[k * 3 + j]);
+                sum += (p + ((p >> 31) & 0x3FFF)) >> 14;
+            }
+            c[i * 3 + j] = sum;
         }
+    }
+}
+
+// ============================================================================
+// MulMatrix0 (0x00409fb0)
+// 3x3 matrix multiply: m2 = m0 * m1 (rotation only, 4.12 fixed-point)
+//
+// The original widens both operands to int[9] at 14-bit amplitude (<< 2) on
+// the stack, multiplies them with GteMulMatrix14 and only then writes m2
+// (>> 2, rounded toward zero). Reading both inputs up front is what makes
+// MulMatrix (0x0040a150) - `MulMatrix0(m0, m1, m0)` - safe in place. The old
+// port multiplied straight out of m0 while writing m2, so with m2 == m0 every
+// row's second and third elements were computed from an already overwritten
+// m[i][0]/m[i][1]. Each call sheared the matrix a little; blood_splatter_physics
+// tumbles a kicked-off zombie head with MulMatrix every frame of its flight, so
+// the head landed visibly squashed and shrunk.
+// ============================================================================
+MATRIX* MulMatrix0(MATRIX* m0, MATRIX* m1, MATRIX* m2)
+{
+    int a[9];
+    int b[9];
+    int c[9];
+
+    for (int i = 0; i < 9; i++) {
+        a[i] = (int)m0->m[i / 3][i % 3] * 4;
+        b[i] = (int)m1->m[i / 3][i % 3] * 4;
+    }
+
+    GteMulMatrix14(a, b, c);
+
+    for (int i = 0; i < 9; i++) {
+        m2->m[i / 3][i % 3] = (short)((c[i] + ((c[i] >> 31) & 3)) >> 2);
     }
     return m2;
 }
@@ -874,23 +912,44 @@ void rotate_entity(MATRIX* parentMtx, void* animData, unsigned char jointIdx)
     unsigned short childListOffset = *(unsigned short*)(animBase + 2 + jointIdx * 4);
     unsigned char* childList = animBase + childListOffset;
 
+    // Sega Saturn, the Tick's stretching arm (saturn/SaturnTick.h): joints 4-6
+    // compose from a copy of the local transform whose offset is scaled, and
+    // the matrix the mesh is drawn with is scaled afterwards while the children
+    // keep composing from the unscaled one.
+    const bool tickArm = g_bSaturnMode && saturn_tick_joint_scaled(ent, jointIdx);
+    MATRIX tickLocal;
+    const MATRIX* local = &joint->transform;
+    if (tickArm) {
+        tickLocal = joint->transform;
+        saturn_tick_scale_local(ent, jointIdx, &tickLocal);
+        local = &tickLocal;
+    }
+    bool composed = false;
+
     // Apply parent transform to joint's local transform → joint's world matrix
     if ((joint->flags & 8) != 0 && (joint->flags & 0x40) == 0) {
-        ApplyLVAndMul0Matrix(parentMtx, &joint->transform, &joint->world);
+        ApplyLVAndMul0Matrix(parentMtx, (void*)local, &joint->world);
         unsigned char f = joint->flags;
         joint->flags = (f & 0xF5) | 0x50;
         joint->field_02 = 0;
+        composed = true;
     }
     if ((joint->flags & 2) != 0) {
-        ApplyLVAndMul0Matrix(parentMtx, &joint->transform, &joint->world);
+        ApplyLVAndMul0Matrix(parentMtx, (void*)local, &joint->world);
+        composed = true;
+    }
+    if (tickArm && composed) {
+        saturn_tick_scale_mesh(ent, jointIdx, &joint->world);
     }
 
     // Recurse into children
+    const MATRIX* childParent = &joint->world;
+    if (tickArm) childParent = saturn_tick_child_parent(ent, jointIdx, childParent);
     char childCount = *(char*)(animBase + jointIdx * 4);
     for (char i = childCount; i != 0; i--) {
         unsigned char childIdx = *childList;
         childList++;
-        rotate_entity(&joint->world, animData, childIdx);
+        rotate_entity((MATRIX*)childParent, animData, childIdx);
     }
 }
 

@@ -7,6 +7,8 @@
 #include "SoundTables.h"
 #include "dc/ArrangeStages.h"     // room_file_stage(), STAGE_ARRANGE_FIRST
 #include "dc/ArrangeSoundRows.h"  // dc_arrange_snd_slots()
+#include "saturn/SaturnBattle.h"
+#include "saturn/SaturnModels.h"
 #include "../DebugPrint.h"
 #include <cmath>
 #include <cstdio>
@@ -631,6 +633,12 @@ static void bgm_fade_out_all(void)
 // ----------------------------------------------------------------------------
 static unsigned char bgm_group_for(unsigned char roomId, unsigned char bgmState)
 {
+    // Port-added: the Saturn Battle Game's arenas take their group from the
+    // Saturn's own per-arena table (saturn/SaturnBattle.h).
+    unsigned char battleGroup;
+    if (saturn_battle_bgm_group(roomId, &battleGroup)) {
+        return battleGroup;
+    }
     unsigned int idx = (get_stage_id() * 0x20 + roomId) * 4 + (bgmState & 7);
     if (g_bgmDataTable == NULL || idx >= sizeof(g_BgmRoomData)) {
         return 0xFF;
@@ -675,6 +683,8 @@ static unsigned char bgm_group_for(unsigned char roomId, unsigned char bgmState)
 // file and loops all of it.
 // ============================================================================
 
+static void bgm_load_group(unsigned char group, int slotCount);
+
 static void bgm_load_and_start(unsigned char bgmState)
 {
     int slotCount = 3;
@@ -710,8 +720,13 @@ static void bgm_load_and_start(unsigned char bgmState)
         g_SndBank[2].paused   = 0;
     }
 
-    unsigned char group = bgm_group_for(g_roomId, bgmState);
+    bgm_load_group(bgm_group_for(g_roomId, bgmState), slotCount);
+}
 
+// The channel loop of bgm_load_and_start (0x0047f2ae..), as its own function so
+// the Saturn Battle Game's end of run can load a group outside the room tables.
+static void bgm_load_group(unsigned char group, int slotCount)
+{
     for (int idx = 0; idx < slotCount; idx++) {
         SndBankSlot* ch = &g_SndBank[idx];
         if (ch->handle != 0) {
@@ -724,7 +739,15 @@ static void bgm_load_and_start(unsigned char bgmState)
 
         if (group == 0xFF) continue;
 
-        const char* filename = g_BgmNameTable[group][idx];
+        // Port-added: a Saturn-only group (the Battle Game's BATTLE.CDP) names
+        // files from the SATURN overlay; the PC table has no row for it.
+        signed char loop = 0;
+        const char* filename = saturn_battle_bgm_name(group, idx, &loop);
+        if (filename == NULL) {
+            if (group >= sizeof(g_BgmNameTable) / sizeof(g_BgmNameTable[0])) continue;
+            filename = g_BgmNameTable[group][idx];
+            loop = (signed char)g_BgmLoopTable[group][idx];
+        }
         if (filename == NULL) continue;
 
         char path[260];
@@ -740,7 +763,7 @@ static void bgm_load_and_start(unsigned char bgmState)
             continue;
         }
 
-        ch->slot = (signed char)g_BgmLoopTable[group][idx];
+        ch->slot = loop;
         pan_set(bank, 0);
 
         // 0x0047f4df: three tracks load muted and are faded up later by the SCD
@@ -757,6 +780,45 @@ static void bgm_load_and_start(unsigned char bgmState)
                    (unsigned int)g_stageId, (unsigned int)g_roomId, idx,
                    (unsigned int)group, filename, (int)ch->slot);
     }
+}
+
+// ============================================================================
+// Port-added (Saturn Battle Game): the end of a run. GAME5 0x06088BDE stops the
+// Tyrant theme (0x0604E200(0, 2)), loads /SND/BATTLE.CDP outside the room BGM
+// machinery (0x06088C04) and starts its song 1, the fanfare (0x0604E124(0, 1)).
+// Loading a pack replaces the songs that were loaded, so every channel stops.
+// ============================================================================
+void bgm_play_group_channel(unsigned char group, int ch)
+{
+    for (int i = 0; i < 3; i++) {
+        if (g_SndBank[i].handle != 0) {
+            setSndStop(g_SndBank[i].handle);
+        }
+    }
+    bgm_load_group(group, 3);
+    g_BGM_STATE = 0;
+    if (ch >= 0 && ch < 3 && g_SndBank[ch].handle != 0) {
+        SetSndSlot(g_SndBank[ch].handle, g_SndBank[ch].slot);
+        g_BGM_STATE = (unsigned char)(8 << ch);
+    }
+}
+
+// Port-added: the other half of bgm_play_group_channel for a caller that is not
+// followed by a room load (the title's OPTIONS menu) - stop and free the three
+// channels and leave the BGM state as sounds_reset does, nothing loaded.
+void bgm_stop_group(void)
+{
+    for (int i = 0; i < 3; i++) {
+        if (g_SndBank[i].handle != 0) {
+            setSndStop(g_SndBank[i].handle);
+            destroySndBank(g_SndBank[i].handle);
+        }
+        g_SndBank[i].handle   = 0;
+        g_SndBank[i].field_04 = 0;
+        g_SndBank[i].slot     = 0;
+        g_SndBank[i].paused   = 0;
+    }
+    g_BGM_STATE = 0xFF;
 }
 
 // ============================================================================
@@ -1442,7 +1504,21 @@ void Room_LoadEnemySoundBanks(void) {
     // so it takes that room's enemy bank list. That is right for the footsteps,
     // the doors and the props, and wrong for everything ADVANCED changed - the
     // per-room override table at the end of this function puts those right.
-    const unsigned int roomIdx = get_stage_id() * 29 + (unsigned int)g_roomId;
+    //
+    // Sega Saturn, Battle Game: an arena is a copy of one campaign room, and
+    // its SE/PCM banks are that room's - the Saturn swaps the arena for it in
+    // LoadRoomSeBank (GAME1 0x06051204) and LoadRoomPcmBank (0x06052AB4) under
+    // battle-mode bit 31. Same reason as load_room_bg's redirect, and the same
+    // table (GAME1 0x06092B5C).
+    unsigned char arenaStage = 0;
+    unsigned char arenaRoom = 0;
+    unsigned int sndStage = get_stage_id();
+    unsigned int sndRoom = (unsigned int)g_roomId;
+    if (saturn_battle_asset_room(&arenaStage, &arenaRoom)) {
+        sndStage = arenaStage;
+        sndRoom = arenaRoom;
+    }
+    const unsigned int roomIdx = sndStage * 29 + sndRoom;
     const int roomIdxValid =
         roomIdx < sizeof(g_RoomSoundNameTable) / sizeof(g_RoomSoundNameTable[0]);
     if (!roomIdxValid) {
@@ -1456,7 +1532,15 @@ void Room_LoadEnemySoundBanks(void) {
     do {
         // Look up per-room sound name table
         const char** soundTable = roomIdxValid ? g_RoomSoundNameTable[roomIdx] : NULL;
-        emsnd_load_slot(iVar6 / 4, soundTable ? soundTable[iVar6 / 4] : NULL);
+        const char* slotName = soundTable ? soundTable[iVar6 / 4] : NULL;
+        
+        // Sega Saturn: the Hunters of the main hall are Ticks, which have their
+        // own sounds (saturn/SaturnModels.h).
+        if (g_bSaturnMode) {
+            const char* tick = saturn_tick_snd_name(iVar6 / 4, slotName, soundTable);
+            if (tick != NULL) slotName = tick;
+        }
+        emsnd_load_slot(iVar6 / 4, slotName);
 
         iVar6 += 4;
         piVar7 += 2;

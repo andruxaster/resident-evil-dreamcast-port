@@ -652,6 +652,35 @@ BOOL Open(const char* path, int playToMs)
     return TRUE;
 }
 
+// Container duration in milliseconds without opening the movie for playback;
+// 0 when it cannot be read.
+int ProbeDurationMs(const char* path)
+{
+    if (!Init()) return 0;
+
+    WCHAR wpath[MAX_PATH];
+    if (MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, MAX_PATH) == 0) {
+        if (MultiByteToWideChar(CP_ACP, 0, path, -1, wpath, MAX_PATH) == 0) {
+            return 0;
+        }
+    }
+
+    IMFSourceReader* reader = NULL;
+    if (FAILED(MFCreateSourceReaderFromURL(wpath, NULL, &reader))) return 0;
+
+    int ms = 0;
+    PROPVARIANT var;
+    PropVariantInit(&var);
+    if (SUCCEEDED(reader->GetPresentationAttribute(
+            (DWORD)MF_SOURCE_READER_MEDIASOURCE, MF_PD_DURATION, &var)) &&
+        var.vt == VT_UI8) {
+        ms = (int)(var.uhVal.QuadPart / 10000);   // 100 ns units
+    }
+    PropVariantClear(&var);
+    reader->Release();
+    return ms;
+}
+
 void PlayFrom(int fromMs)
 {
     if (s_reader == NULL) return;
@@ -794,6 +823,34 @@ BOOL plat_video_open_and_play(const char* filePath, int playToMs)
         return MciOpenAndPlay(absPath, playToMs);
     }
     return mf::Open(absPath, playToMs);
+}
+
+// Legacy AVI: avih holds the frame period and the frame count.
+static int AviDurationMs(const char* path)
+{
+    FILE* f = fopen(path, "rb");
+    if (f == NULL) return 0;
+    unsigned char buf[16384];
+    const size_t n = fread(buf, 1, sizeof(buf), f);
+    fclose(f);
+
+    for (size_t i = 0; i + 32 <= n; ++i) {
+        if (memcmp(buf + i, "avih", 4) == 0) {
+            const unsigned int us = RdU32(buf + i + 8);
+            const unsigned int frames = RdU32(buf + i + 8 + 16);
+            return (int)((double)us * (double)frames / 1000.0 + 0.5);
+        }
+    }
+    return 0;
+}
+
+int plat_video_probe_duration_ms(const char* filePath)
+{
+    char absPath[MAX_PATH];
+    if (GetFullPathNameA(filePath, sizeof(absPath), absPath, NULL) == 0) {
+        strcpy_s(absPath, sizeof(absPath), filePath);
+    }
+    return IsLegacyAvi(absPath) ? AviDurationMs(absPath) : mf::ProbeDurationMs(absPath);
 }
 
 void plat_video_play_from(int fromMs)

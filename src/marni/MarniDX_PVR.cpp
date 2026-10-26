@@ -109,6 +109,9 @@ struct TexSlot {
 // each). KOS only fills pvr_stats' vertex-buffer fields in DMA mode.
 static uint32_t g_frameTaBytes = 0, g_peakTaBytes = 0;
 
+// MERGE140: MarniDX::TextureSerial - bumped every time a slot is released.
+static unsigned int s_texSerial[MARNI_MAX_TEXTURES];
+
 extern "C" char _etext[] __attribute__((weak));
 extern "C" const char* dc_last_loaded_file(void);   // dc_iso.cpp
 
@@ -315,6 +318,10 @@ static void SendHeader(MarniDX::Impl* p, const DrawKey& k)
     case MARNI_BLEND_DISABLE:
         cxt.blend.src = PVR_BLEND_ONE;
         cxt.blend.dst = PVR_BLEND_ZERO;
+        break;
+    case MARNI_BLEND_ADD_ALPHA:            // MERGE140: PS1 ABR 1/3 (glass, smoke)
+        cxt.blend.src = PVR_BLEND_SRCALPHA;
+        cxt.blend.dst = PVR_BLEND_ONE;
         break;
     case MARNI_BLEND_ALPHA:
     default:
@@ -1091,10 +1098,22 @@ void MarniDX::DestroyTexture(MarniHandle tex)
     }
     if (p->haveHeader && p->lastKey.tex == tex) p->haveHeader = false;
     s = TexSlot();
+    s_texSerial[tex]++;
     // Last owner gone: MarniSystem.cpp drops the STP knock-out twin it keyed
     // on this handle (the handle can be reused by an unrelated texture next).
     dc_marni_texture_freed((unsigned int)tex);
 }
+
+// MERGE140: HD textures only (inactive on Dreamcast, see plat_dir_list).
+BOOL MarniDX::ReplaceTexture(MarniHandle, int, int, const void*) { return FALSE; }
+
+unsigned int MarniDX::TextureSerial(MarniHandle tex) const
+{
+    return (tex < MARNI_MAX_TEXTURES) ? s_texSerial[tex] : 0;
+}
+
+// The PVR output is always 640x480, i.e. already 4:3.
+void MarniDX::SetAspectLock(BOOL) {}
 
 MarniHandle MarniDX::WhiteTexture() const
 {

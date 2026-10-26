@@ -3,6 +3,7 @@
 #include "../../Globals.h"
 #include "../Types.h"
 #include "Items.h"
+#include "../Bonus.h"
 
 unsigned char lockpick_item_id(void)
 {
@@ -46,7 +47,9 @@ int dc_is_infinite_colt_python(unsigned char itemId)
     // The flag is DC-only (the DC's ENDING overlay raises it on an ADVANCED
     // best ending) and the port sets it only in DC mode, so the g_bDcMode gate
     // changes nothing for a DC session and keeps Mode=OG exactly as it was.
-    return g_bDcMode
+    // Port: the bonus Colt Python (Bonus.h) carries the same flag into the
+    // other modes while it is switched on, so it is unlimited there too.
+    return (g_bDcMode || bonus_weapon_active(BONUS_WEAPON_PYTHON))
         && itemId == (unsigned char)ITEM_COLT_PYTHON_MAG
         && Flg_ck((int)g_ScenarioFlags, DC_SCENARIO_FLAG_INF_COLT_PYTHON) != 0;
 }

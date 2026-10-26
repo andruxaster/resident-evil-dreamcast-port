@@ -102,6 +102,15 @@ bool VmuName(const char* path, char* out, size_t outSize)
     const char* bs = strrchr(path, '\\');
     if (bs != nullptr && (base == nullptr || bs > base)) base = bs;
     base = base ? base + 1 : path;
+    // MERGE140: 16 save slots since 1.4.0, and "savedat10.dat" is one
+    // character over the VMU's 12: slots 10.. are stored as SAVEDT<N>.DAT.
+    char tmp[16];
+    int slot = 0;
+    if (strlen(base) > 12 && sscanf(base, "%*[sS]%*[aA]%*[vV]%*[eE]%*[dD]%*[aA]%*[tT]%d", &slot) == 1 &&
+        slot >= 10 && slot <= 99) {
+        snprintf(tmp, sizeof(tmp), "savedt%d.dat", slot);
+        base = tmp;
+    }
     const size_t n = strlen(base);
     if (n == 0 || n > 12 || n + 1 > outSize) return false;
     for (size_t i = 0; i <= n; ++i) {
@@ -109,6 +118,17 @@ bool VmuName(const char* path, char* out, size_t outSize)
         out[i] = (c >= 'a' && c <= 'z') ? (char)(c - 'a' + 'A') : c;
     }
     return true;
+}
+
+// The save root's name for a VMU file: SAVEDT<N>.DAT -> savedat<N>.dat.
+const char* RamName(const char* vmuName, char* out, size_t outSize)
+{
+    int slot = 0;
+    if (strncasecmp(vmuName, "SAVEDT", 6) == 0 && sscanf(vmuName + 6, "%d", &slot) == 1) {
+        snprintf(out, outSize, "savedat%d.dat", slot);
+        return out;
+    }
+    return vmuName;
 }
 
 bool WriteRam(const char* name, const void* data, size_t len)
@@ -141,7 +161,8 @@ bool LoadFromVmu(const char* vmuName)
     bool ok = false;
     if (got && memcmp(buf, kMagic, 4) == 0) {
         const uint32_t len = buf[4] | (buf[5] << 8) | (buf[6] << 16) | ((uint32_t)buf[7] << 24);
-        if (len <= (uint32_t)size - 8) ok = WriteRam(vmuName, buf + 8, len);
+        char ramName[24];
+        if (len <= (uint32_t)size - 8) ok = WriteRam(RamName(vmuName, ramName, sizeof(ramName)), buf + 8, len);
     }
     free(buf);
     return ok;
@@ -160,7 +181,8 @@ void dc_save_init(void)
         if (d != nullptr) {
             struct dirent* e;
             while ((e = readdir(d)) != nullptr) {
-                if (strncasecmp(e->d_name, "SAVEDAT", 7) != 0) continue;
+                if (strncasecmp(e->d_name, "SAVEDAT", 7) != 0 &&
+                    strncasecmp(e->d_name, "SAVEDT", 6) != 0) continue;
                 if (LoadFromVmu(e->d_name)) fromVmu++;
                 else printf("[SAVE] %s/%s is not an RE1 save, ignored\n", s_vmuRoot, e->d_name);
             }
@@ -174,7 +196,7 @@ void dc_save_init(void)
     // Import PC saves shipped on the disc for slots the VMU does not have.
     char exeDir[64];
     if (plat_exe_dir(exeDir, sizeof(exeDir))) {
-        for (int i = 1; i <= 9; ++i) {
+        for (int i = 1; i <= 16; ++i) {
             char name[16], ram[48], disc[96];
             snprintf(name, sizeof(name), "savedat%d.dat", i);
             snprintf(ram, sizeof(ram), "%s%s", kRamRoot, name);

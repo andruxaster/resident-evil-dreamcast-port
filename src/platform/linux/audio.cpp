@@ -153,7 +153,7 @@ void MixCallback(void* /*userdata*/, Uint8* stream, int len)
                     i = (size_t)bank.pos;
                     if (i >= end) { bank.pos = (double)begin; i = begin; }
                 }
-                else { bank.playing = false; bank.status = 0; break; }
+                else { bank.playing = false; bank.status = 0; bank.pos = 0.0; break; }
             }
 
             Sint32 l, r;
@@ -189,16 +189,20 @@ void MixCallback(void* /*userdata*/, Uint8* stream, int len)
     }
 }
 
+// IDirectSoundBuffer::Stop leaves the play cursor where it is, and the
+// original's PlaySound (0x0041ee60) only rewinds a buffer that is still
+// playing - so a stopped bank resumes. PauseSounds / ResumePausedSounds are
+// built on exactly that.
 void StopBank(Bank& bank)
 {
     bank.playing = false;
     bank.status = 0;
-    bank.pos = 0.0;
 }
 
 void FreeBank(Bank& bank)
 {
     StopBank(bank);
+    bank.pos = 0.0;
     free(bank.wavData);
     bank.wavData = NULL;
     bank.pcm = NULL;
@@ -269,7 +273,8 @@ void DirectSound::PlaySound(int bank, unsigned int slot)
 
     Bank& b = s_banks[bank];
     if (b.active && b.pcm != NULL) {
-        b.pos = 0.0;
+        // 0x0041ee60: SetCurrentPosition(0) only while the buffer is playing.
+        if (b.playing) b.pos = 0.0;
         b.slot = (int)slot;
         b.loop = (slot != 0);
         b.playing = true;
@@ -400,7 +405,7 @@ void InitializeSoundSystem(void)
         return;
     }
 
-    s_outRate = AudioFile_TreeHasPs1Audio() ? 44100 : 22050;
+    s_outRate = AudioFile_TreeHasCDAudio() ? 44100 : 22050;
 
     SDL_AudioSpec want = {};
     want.freq     = OUT_RATE;

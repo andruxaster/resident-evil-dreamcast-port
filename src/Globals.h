@@ -187,6 +187,15 @@ extern short         g_TexturePageOriginY[256];   // VRAM Y origin (scanlines)
 extern short         g_TexturePageId[256];        // tpage code assigned to each slot;
                                                   // what TextureDesc::texturePage is matched against
 extern short         g_TexturePageClutBase[256];  // base clutY (= pageOffset + 0x1E0)
+// Port-only: the PS1 per-texel semi-transparency split of a page. A sprite
+// drawn with a PS1 blend mode only blends the texels whose CLUT entry carries
+// the STP bit; the others are opaque. The PC build has no such rule (see
+// LoadTexturePage), so for the pages that ask for it LoadTexturePage keeps a
+// second texture holding just the non-STP texels, and the additive sprite
+// draw lays it over its own result (SPRITE_FLAG_ADDITIVE, SpriteRenderer.h).
+extern MarniHandle   g_TexturePageOpaqueSRV[256];   // non-STP texels, or null
+extern MarniHandle   g_TexturePageOpaqueBase[256];  // the g_TexturePageSRV it was cut from
+extern int           g_TexturePageSplitStp;         // set around a LoadTexturePage call
 extern int           g_texturePageMode;
 extern int           g_texturePageHandle;
 extern void*         g_texturePageSrcDesc;   // port-only: last create_texture_page source, for diagnostics
@@ -457,11 +466,11 @@ extern DWORD         g_MainStateFlagBank[2];           // 0x00be41c0
 //
 // GAME_MODE_OG is the PC release, which is the original PS1 game's content; it
 // uses no overlay at all, so every path resolves exactly as it did before modes
-// existed. SATURN and NDS are placeholders: their names reserve the folder and
-// the enum value, and neither has any code behind it yet.
+// existed. SATURN has code (src/game/saturn/) and an overlay; NDS is still a
+// placeholder whose name only reserves the folder and the enum value.
 #define GAME_MODE_OG                 0   // PC / original PS1 content (default)
 #define GAME_MODE_DC                 1   // Director's Cut (SLUS_005.51)
-#define GAME_MODE_SATURN             2   // reserved, not implemented
+#define GAME_MODE_SATURN             2   // Sega Saturn version
 #define GAME_MODE_NDS                3   // reserved, not implemented
 
 extern int           g_GameMode;               // [Game] Mode -> GAME_MODE_*
@@ -472,10 +481,28 @@ extern bool          g_bPs1FmvSubtitles;      // [Game] Ps1FmvSubtitles
 // and DMF/DME. Off by default, so the original's masks are what ship.
 extern bool          g_bSkipUnskippableFmv;    // [Game] SkipUnskippableFmv
 
+// Port-added: force the Saturn's Battle Game title item on, without having
+// cleared a game first. The Saturn gates that item on one flag - save byte 0xBF,
+// raised by any ending (ENDING.PRG 0x0602DC28) or by the port-2 X+Y+Z+Start
+// cheat on the title's press-start screen (TITLE.PRG 0x0602DD70), neither of
+// which a PC player is going to reproduce. This is a read-time override only:
+// it never writes the card byte, so a save made with it on still records
+// whatever the game itself earned. Any mode: OG and DC show the item too when the
+// SATURN/ assets are imported (saturn_battle_offered() in
+// src/game/saturn/SaturnBattle.h) and run the Battle Game in Saturn mode.
+extern bool          g_bSaturnBattleGame;       // [Game] BattleGame
+
 // Every "are we in Director's Cut mode" test in the port. Deliberately a macro
 // over g_GameMode rather than a second global: there is one stored value, so
 // the two cannot drift, and an accidental assignment fails to compile.
 #define g_bDcMode                    (g_GameMode == GAME_MODE_DC)
+
+// Every "are we in Saturn mode" test in the port, on the same one-value
+// principle as g_bDcMode: [Game] Mode picks the code branch AND the SATURN/
+// overlay folder, so the two cannot drift, and an accidental assignment fails to
+// compile. The Saturn adds only exclusive content on top of the campaign, so
+// most code never tests this - it is off in the entire DC/OG path.
+#define g_bSaturnMode                (g_GameMode == GAME_MODE_SATURN)
 
 // g_DcDifficulty is the DC title screen's choice (PS1 g_abDcGameMode
 // 0x800c8693); it is also stored in the save block, so a DC save reloads as its
@@ -490,12 +517,86 @@ extern bool          g_bSkipUnskippableFmv;    // [Game] SkipUnskippableFmv
 #define DC_DIFFICULTY_TRAINING       1           // more starting health
 #define DC_DIFFICULTY_ADVANCED       2           // Arrange mode (STAGE8-E)
 #define DC_DIFFICULTY_ADVANCED_HOLD  3           // Same arrange mode, but with double ammo (selected by holding right)
+// Port-only: bit 2 of the card's mode byte (+0x233) marks a save made in Sega Saturn
+// mode. The DC difficulty lives in bits 0-1 and is always read masked with 3.
+#define SAVE_MODE_SATURN_FLAG        0x04
+// Port-only: the save file carries the time() it was written at, 4 bytes little endian,
+// right after the original 0xA82-byte layout.
+#define SAVE_OFFSET_TIMESTAMP        0xA82
+unsigned int SaveTimestampNow(void);   // SaveLoadScreen.cpp
+// Port-only helpers shared with the debug quick save / load lists (SaveLoadScreen.cpp):
+// the time a save file was written (its own stamp, else the file's date; 0 = unknown),
+// and the "Saturn Mode - DD/MM/YYYY HH:mm" line the save screen shows for a slot.
+unsigned int SaveFileTimestamp(const char* path, const char* buffer, int size);
+void SaveModeTimeText(unsigned int dcGameMode, unsigned int timestamp, char* out, size_t outSize);
+#define SAVE_SLOT_TOTAL              16     // save slots (the original has 8)
+// Port-only font tint (CLUT row 5, see AddTintSprite): the Saturn save rows.
+#define SAVE_ROW_COLOUR_BLUE         5
 #define MSF2_DC_ADVANCED_HOLD        0x00010000u // bit 16 - ADVANCED* (double ammo)
 #define MSF2_DC_ADVANCED             0x00020000u // bit 17 - ADVANCED
 #define MSF2_DC_TRAINING             0x00040000u // bit 18 - TRAINING
 #define MSF2_DC_MODE_MASK            0x00070000u // all three
 
 extern int           g_DcDifficulty;           // DC_DIFFICULTY_*
+
+// Western difficulty - port-added name for what the PS1 USA release, the Saturn
+// USA release all ship as their only rules (the PC release
+// and the Japanese releases are the other axis). Verified against SLUS_001.70,
+// the USA stage overlays and the Saturn GAME*.PRG modules (docs/WESTERN_DIFFICULTY.md):
+//   - enemies take the PC's "second playthrough" branch: SCENARIO_FLAG_SECOND_
+//     PLAYTHROUGH is raised for the whole session (GameStart.cpp), which also
+//     selects the second-playthrough weapon-hit table (== the PS1 / Saturn
+//     table, 200 of 200 records) and makes Jill need ink ribbons;
+//   - no auto-aim: raising a weapon never turns the player toward an enemy (the
+//     PC's reticle follow, lock-on fire and knife turn are Japanese-release
+//     behaviour); the player rotates by hand;
+//   - an ink ribbon pick-up is 2, not the PC's 3 (every PS1 / Saturn RDT says 2);
+//   - a Hunter only pounces on a player under 98 / 67 health (Chris / Jill),
+//     not the PC's 105 / 72 (hunter_player_health_gate).
+// Always on in the USA Saturn (campaign and Battle Game); opt-in with
+// [Game] WesternDifficulty=1 for the PC release and for the Director's Cut.
+//
+// The Director's Cut is its own set (SLUS_005.51, docs/WESTERN_DIFFICULTY.md):
+// the PC's auto-aim (the gun-aim state 0x8003ea08 reads the reticle result and
+// turns toward it, the gun hold 0x8003f008 enters lock-on behaviour 0x1a), each
+// ribbon record's own quantity (3 in the DC rooms), weapon damage from its own
+// three columns (dc/WeaponDamageTables.h), and the second-playthrough enemies
+// through the flag InitializeGame forces for g_bDcMode. The option overrides
+// STANDARD, ADVANCED and ADVANCED* with the western pieces; TRAINING always
+// keeps the DC's own rules.
+//
+// Not for the Japanese Saturn ("Bio Hazard", Saturn mode on the JPN tree): all
+// five of its GAME*.PRG keep the PC's FIRST-playthrough weapon-hit table (200 of
+// 200 records; 71 differ from the western one) and the PC's 105 / 72 Hunter
+// gate - the Japanese rules, like the JPN PC release
+// (docs/WESTERN_DIFFICULTY.md, tools/verify_western_difficulty.py).
+extern bool          g_bWesternDifficultyOption;   // [Game] WesternDifficulty
+extern "C" int       GetAssetVersion(void);        // system/AssetPath.h
+static inline bool western_difficulty(void)
+{
+    if (g_bDcMode) {
+        return g_bWesternDifficultyOption && g_DcDifficulty != DC_DIFFICULTY_TRAINING;
+    }
+    return g_bWesternDifficultyOption
+        || (g_bSaturnMode && GetAssetVersion() == 0);
+}
+
+// Port-added. Whether Jill has to use ink ribbons like Chris. The PC release's
+// easy rule - a Jill whose SCENARIO_FLAG_SECOND_PLAYTHROUGH is clear saves
+// without a ribbon, never sees a ribbon pick-up and loses the main-hall one
+// (check_typewriter, LoadSaveGameState, cmd_item_model_set, InitializeGame) -
+// is the PC's alone: on the PS1 (USA and Japanese), the Saturn (USA and
+// Japanese) and the Director's Cut she always needs them. Western difficulty
+// gets this for free by raising the flag; the Japanese Saturn keeps the flag
+// down (Japanese damage rules) and still needs ribbons, so the rule is keyed
+// on the mode rather than on the difficulty. Every Saturn ribbon record exists
+// for Jill too (the rooms list it for both variants: 2 per pick-up on the USA
+// disc, 3 on the Japanese - which room_event_item_pickup's 2-or-3 already
+// gives).
+static inline bool jill_needs_ink_ribbons(void)
+{
+    return g_bSaturnMode || g_bDcMode;
+}
 
 // The game's random stream, mode-aware (Globals.cpp). The PC release recorded
 // its demo reels against the CRT rand; the PS1 DC uses its own LCG, so DC
@@ -573,6 +674,7 @@ void dc_apply_item_tables(void);
 // Install the Director's Cut's one zombie dispatch-table edit - the extra entry
 // that lands on behaviour 11 (Zombie.cpp). No-op when g_bDcMode is off.
 void dc_apply_zombie_tables(void);
+void saturn_apply_zombie_tables(void);   // Zombie.cpp - Saturn behaviour 9 = chase
 
 extern WORD&         g_message_flags;                  // 0x00bebcc0 (g_messageFlagPair[0], FLAGBANK_LAYOUT_FIX)
 
@@ -753,7 +855,7 @@ extern unsigned char g_PlayerMaxHealth;                // 0x00be6459
 extern MATRIX        g_RoomCameraData;                 // 0x004bca88 - Room camera matrix
 extern DWORD         g_RoomCameraDataCopy;             // 0x00d1fdd4
 extern DWORD         g_deadMoveValue;                  // 0x00d1fdd0
-extern int           DAT_004bd2b0;                     // 0x004bd2b0 - hunter grab / death-screen one-shot
+extern int           g_dieScreenHideHead;              // 0x004bd2b0 - hunter grab / death-screen one-shot
 extern DWORD         g_lightMatrixPtr;                 // 0x00d1fdcc
 extern MATRIX        g_identityMatrixData;             // 0x004bca68
 extern MATRIX        g_lightMatrix;                    // 0x004bcaa8
@@ -807,6 +909,14 @@ extern unsigned char g_effectSpritePageV[50];
 // load_effect_sprites from the RDT-embedded room TIMs (and by
 // load_shoot_direction_data for the core00 sheets). Port-only companion table.
 extern unsigned char g_effectSpriteClutRows[50];
+// Per-sprite bitmask of the sheet TIM's CLUT rows (bit r = row r, rows 0-3)
+// whose drawn entries carry the PS1 STP bit (bit 15). The PS1 GPU applies a
+// sprite's semi-transparency only to STP texels, so a semi-transparent effect
+// drawn in a row without STP is opaque there (type 5: muzzle-flash rows 0/1 are
+// opaque, the shoot-the-camera glass row 2 blends). Read from core00.etm and the
+// room TIMs, which keep the bits; the PC Effspr pages the port bakes from do
+// not. Port-only companion table, filled next to g_effectSpriteClutRows.
+extern unsigned char g_effectSpriteStpRows[50];
 
 // Entity joint animation copy base (set by SetupEntityJointAnimation)
 extern int           DAT_00be0e00;                     // 0x00be0e00
@@ -876,7 +986,7 @@ extern void*         g_RoomActionTail;              // 0x00d91bc0
 extern void*         g_pRoomActionEntry;               // 0x00d226a4
 
 // Room model record tables (populated by room_set from the RDT VB region)
-extern void*         g_omodel_table[8];      // 0x00d226b0 - room-object (omodel) records
+extern void*         g_omodel_table[14];     // 0x00d226b0 - room-object (omodel) records (0x00d226b0..0x00d226e8)
 extern void*         g_item_model_table[8]; // 0x00d21360 - item model records (room pick-up 3D models)
 
 // Enemy model loading state (used by room_set and cmd_omodel_set)
@@ -1141,7 +1251,7 @@ extern short         g_titleDemoTime;                  // 0x00d22788
 // ADVANCED option - the PS1 overlay's g_titleHoldTimer (0x800e16ca), which the
 // PC build has no equivalent of because it has no submenu.
 extern unsigned char g_titleHoldTimer;
-extern short         g_titleTexturePageData[8];       // 0x00d22778 - per-selection tpage
+extern short         g_titleTexturePageData[12];       // 0x00d22778 - per-selection tpage
 extern int           g_sceneRenderParam;               // 0x004d6300
 extern DWORD         g_titlePrimType;                  // 0x004d6398
 extern DWORD         g_primParam;                      // 0x004d63e0
@@ -1276,6 +1386,10 @@ unsigned int  ChkOutsideCell(VECTOR* position, SVECTOR* offset,
 unsigned char check_room_collision(VECTOR* position, short radius);    // 0x0047d310
 short         room_collision_check_0047da50(VECTOR* position,
                                             VECTOR* offset);           // 0x0047da50
+// The same point query with the boundary rectangles grown by `radius` (the PC
+// itself always passes 0; the Saturn Tick's path probe passes 2).
+short         room_collision_check_radius(VECTOR* position, VECTOR* offset,
+                                          unsigned int radius);
 // Line-of-sight query: does ENTITY -> ENTITY+delta cross a sight-blocking
 // boundary record in quadrant `cell`? 1 = blocked.
 unsigned int  room_check_sight_blocked(VECTOR* delta, unsigned char cell); // 0x0047db90
@@ -1673,10 +1787,20 @@ extern DWORD        g_effectAnimData[425];              // 0x00bf0b1c - per-type
 // move on its own. The guard absorbs every such spill; the model's own byte
 // offsets inside the load region are unchanged. Largest model loaded here:
 // char11.emd 112968 B (costume variants: em1030 112664 B).
+//
+// The Saturn's converted alternate outfits (SATURN/Enemy/EM1060/1061/1160/1161,
+// saturn/SaturnModels.h) are 197-229 KB: their TMD is ~22 KB and ends inside
+// `first` like the originals', but the multi-page TIM behind it runs 160-193 KB.
+// The guard is sized for 256 KB of spill so the largest of them (228,740 B, i.e.
+// ~120 KB past the pair) cannot reach whatever the linker put next.
 struct EntityModelStorage {
     BYTE first[52224];    // 0x00bf11c0
     BYTE second[56320];   // 0x00bfddc0
-    BYTE spillGuard[16384];  // not part of the original layout - see above
+#if defined(__DREAMCAST__) && !RE1_DC_SATURN
+    BYTE spillGuard[16384];  // MERGE140: stock models only (char11.emd spills 4424 B)
+#else
+    BYTE spillGuard[262144]; // not part of the original layout - see above
+#endif
 };
 extern BYTE (&g_entityModelBuffer)[52224];
 extern BYTE (&g_entityModelBuffer2)[56320];
@@ -1688,8 +1812,21 @@ extern DWORD        g_animObjectBuffer[0x680];       // 0x00c133c0 - weapon anim
 // 0x00c14dc0 - Shoot direction data buffer
 extern BYTE          g_shootDirEspBuffer[73728];
 
-// 0x00c26dc0 - General purpose data buffer (832728 bytes)
-extern BYTE          g_DataBuffer[832728];
+// 0x00c26dc0 - General purpose data buffer (832728 bytes in the original).
+// The room RDT and every enemy EMD of the room load into it back to back. The
+// port adds headroom past the original size for Saturn-converted models
+// (tools/saturn_emd.py pc), whose multi-page TIMs make an EMD 2-2.5x the stock
+// size: arena 80C0 = 351 KB room + zombie + 379 KB Wesker would overrun the
+// original 832 KB. Nothing addresses the buffer past its original end, so the
+// original layout inside it is unchanged.
+#define DATA_BUFFER_ORIGINAL_SIZE  832728
+#if defined(__DREAMCAST__) && !RE1_DC_SATURN
+// MERGE140: no Saturn models in this Dreamcast build - and no 1 MB to spare.
+#define DATA_BUFFER_PORT_HEADROOM  0
+#else
+#define DATA_BUFFER_PORT_HEADROOM  0x100000
+#endif
+extern BYTE          g_DataBuffer[DATA_BUFFER_ORIGINAL_SIZE + DATA_BUFFER_PORT_HEADROOM];
 
 // 0x00cf2298 - TIM Image buffer, first 20 bytes are the header
 // Buffer Size: 187180 bytes (187160 headless)
@@ -1847,6 +1984,7 @@ void ProcessTextureImage(void* imageBuffer, short textureBankID, short pageOffse
 void LoadTexturePage(void* imageBuffer, short texId, short pageOffset, int slotIndex,
                      int unused, short posX, short posY, unsigned int flags);
 void LoadEffectTextureSheet(int slot, void* timData);   // effect sheets at explicit slots (TextureLoader.cpp)
+DWORD* EffectTextureSheet_BuildRGBA(void* timData, int* outW, int* outH, int* outBpp); // its pixels; caller delete[]s
 int  LoadEffectTextureSheetVariants(int baseSlot, void* timData, int maxRows);  // one SRV per CLUT row (TextureLoader.cpp)
 int  create_texture_page(void* data, int mode);
 void destroy_texture_page(int handle);
@@ -1925,6 +2063,7 @@ void update_player_position(PlayerEntity* ent, int a);// 0x0041c060
 int  check_door(unsigned char* entry);              // 0x0041b6d0 room_check_actions[5]
 int  no_room_action(unsigned char* entry);          // 0x0041c050 room_check_actions[0]
 int  door_try_enter(unsigned char* entry);           // 0x0041b400 room_check_actions[1]
+void door_begin_transition(unsigned char* record);   // 0x0041b59c hand a door record to room_transition_load
 int  display_msg_room_action(unsigned char* entry);  // 0x0041b630 room_check_actions[2]
 int  include_key(unsigned char* entry);              // 0x0041b650 room_check_actions[3]
 int  set_key_flag(unsigned char* entry);             // 0x0041b6a0 room_check_actions[4]
@@ -2020,6 +2159,9 @@ void  operator_delete(void* ptr);
 // --- Title screen ---
 void set_display_resolution(int w, int h, int mode);
 void display_image(int slot, void* buffer, int width, int height);
+void display_image_rgba(int slot, const void* rgba, int texWidth, int texHeight,
+                        int width, int height);   // port-only
+void display_image_to_rgba(const void* buffer, int pixelCount, unsigned int* rgba); // port-only
 void title_setup_texture_pages(int slot, int mode);
 int  check_save_files_exist(void);
 void UpdateTitleTextSprite(unsigned char brightness, unsigned char selectionId);
@@ -2048,7 +2190,12 @@ void FUN_004403c0(int param_1, int param_2, int param_3, int* param_4);
 void init_room(void);
 void room_set(void);
 void LoadRoomRdt(void);
+// Port-only: did the last LoadRoomRdt() find its file? The original returns void
+// and never fails; room_set() needs to know. (src/game/RoomInit.cpp)
+int  Room_RdtLoadFailed(void);
 void update_room_bgm(void);
+void bgm_play_group_channel(unsigned char group, int ch);  // port-added, SoundSystem.cpp
+void bgm_stop_group(void);                                 // port-added, SoundSystem.cpp
 void LoadHeldItemsImages(void);
 void load_room_bg(void);
 void load_room_bg_image(void);

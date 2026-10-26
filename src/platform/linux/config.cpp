@@ -41,6 +41,15 @@ void CleanupVideoConfigAndSaveAllSettings(void)
 // A lock file beside the game root. The lock is released by the kernel when
 // the process exits, so a crash cannot leave a stale lock behind.
 // ---------------------------------------------------------------------------
+void plat_single_instance_release(void)
+{
+    if (s_lockFd >= 0) {
+        flock(s_lockFd, LOCK_UN);
+        close(s_lockFd);
+        s_lockFd = -1;
+    }
+}
+
 BOOL plat_single_instance_check(void)
 {
     s_lockFd = open("re1.lock", O_RDWR | O_CREAT, 0666);

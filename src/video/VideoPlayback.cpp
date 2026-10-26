@@ -10,6 +10,7 @@
 #include "../game/Ps1FmvSubtitles.h"
 #include "../platform/platform.h"
 #include "../system/AssetPath.h"
+#include "../system/HdTextures.h"
 #include "../marni/MarniSystem.h"
 #include <stdio.h>
 
@@ -140,22 +141,58 @@ static WORD GetFmvSkipMask(int fmvId)
 #define FMV_PROLOGUE_CUT_END_DC_FRAME   2591 // SLUS_001.70 PlayFMV @0x80037020: 0xa1f
 #define FMV_PROLOGUE_DC_FPS             15
 
+// The cut is chosen from the length of the movie that is actually playing, not
+// from [Game] Mode: the censored releases (PS1 / Director's Cut, Saturn USA) cut
+// ~16 s out of the scene before the Chris-only beat, and a USA tree can hold
+// either stream in any mode. Measured lengths (ffprobe / re1am_selftest satcpk):
+//   PC AVI              ~225.9-226.1 s  cut 177.8 - 188.5 s (10 fps frames 1778/1885)
+//   PS1 / DC STR        210.533 s       frames 2430 - 2591 @15 fps (3158 frames)
+//   Saturn USA          210.067 s       frames 2430 - 2580 (2430 + 150 + 571)
+//   Saturn JPN          226.000 s       frames 2666 - 2817 (2666 + 151 + 573)
+#define FMV_PROLOGUE_CENSORED_MAX_MS    218000
+#define FMV_PROLOGUE_SATURN_USA_MS      210067
+#define FMV_PROLOGUE_SATURN_JPN_MS      226000
+#define FMV_PROLOGUE_MATCH_TOLERANCE_MS 40
+
 static int DcFrameToMs(int frame)
 {
     return (frame * 1000 + FMV_PROLOGUE_DC_FPS / 2) / FMV_PROLOGUE_DC_FPS;
 }
 
-static int GetPrologueCutStartMs(void)
+static BOOL NearMs(int a, int b)
 {
-    return g_bDcMode ? DcFrameToMs(FMV_PROLOGUE_CUT_START_DC_FRAME)
-                     : FMV_PROLOGUE_CUT_START_USAGE_MS;
+    const int d = a - b;
+    return (d < 0 ? -d : d) <= FMV_PROLOGUE_MATCH_TOLERANCE_MS;
 }
 
-static int GetPrologueCutEndMs(void)
+// Cut points for the prologue file about to play, set by SelectPrologueCut().
+static int s_prologueCutStartMs = FMV_PROLOGUE_CUT_START_USAGE_MS;
+static int s_prologueCutEndMs   = FMV_PROLOGUE_CUT_END_USAGE_MS;
+
+static void SelectPrologueCut(const char* path)
 {
-    return g_bDcMode ? DcFrameToMs(FMV_PROLOGUE_CUT_END_DC_FRAME)
-                     : FMV_PROLOGUE_CUT_END_USAGE_MS;
+    const int durationMs = plat_video_probe_duration_ms(path);
+
+    int startMs = FMV_PROLOGUE_CUT_START_USAGE_MS;
+    int endMs   = FMV_PROLOGUE_CUT_END_USAGE_MS;
+
+    if (durationMs > 0 && durationMs < FMV_PROLOGUE_CENSORED_MAX_MS) {
+        startMs = DcFrameToMs(FMV_PROLOGUE_CUT_START_DC_FRAME);
+        endMs   = NearMs(durationMs, FMV_PROLOGUE_SATURN_USA_MS)
+                      ? DcFrameToMs(2580)
+                      : DcFrameToMs(FMV_PROLOGUE_CUT_END_DC_FRAME);
+    } else if (NearMs(durationMs, FMV_PROLOGUE_SATURN_JPN_MS)) {
+        startMs = DcFrameToMs(2666);
+        endMs   = DcFrameToMs(2817);
+    }
+
+    s_prologueCutStartMs = startMs;
+    s_prologueCutEndMs   = endMs;
+    dbg_printf("[VIDEO] prologue %d ms -> Jill cut %d-%d ms\n", durationMs, startMs, endMs);
 }
+
+static int GetPrologueCutStartMs(void) { return s_prologueCutStartMs; }
+static int GetPrologueCutEndMs(void)   { return s_prologueCutEndMs; }
 
 // ============================================================================
 // Global video playback state (file-scope, persistent across UpdateVideoPlayback calls)
@@ -252,6 +289,17 @@ BOOL CheckVideoFileExists(const char* filename)
                                           sizeof(creditsPath)) &&
         FileReadable(creditsPath)) {
         strcpy_s(g_videoFilePath, sizeof(g_videoFilePath), creditsPath);
+        Ps1EndingCredits_SetVideoPath(g_videoFilePath);
+        return TRUE;
+    }
+
+    // Port-added: an HD movie, "HD/<TREE>/MOVIE/<name>.mp4" (the asset
+    // migrator's HD Pack tab), stands in for the tree's own movie.
+    char key[MAX_PATH];
+    char hd[MAX_PATH];
+    if (AssetSourceKey(filename, key, sizeof(key)) != NULL &&
+        HdTextures_NamedFile(key, ".mp4", hd, sizeof(hd))) {
+        strcpy_s(g_videoFilePath, sizeof(g_videoFilePath), hd);
         Ps1EndingCredits_SetVideoPath(g_videoFilePath);
         return TRUE;
     }
@@ -358,6 +406,7 @@ void UpdateVideoPlayback(void)
     case 1: // Open and start playing
         {
             // Jill: stop the first chunk right before the Chris-only dialogue.
+            if (UsesScenarioCut()) SelectPrologueCut(g_videoFilePath);
             int playTo = UsesScenarioCut() ? GetPrologueCutStartMs() : 0;
 
             Ps1EndingCredits_StartVideo();

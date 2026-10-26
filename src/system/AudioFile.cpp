@@ -25,6 +25,7 @@ const unsigned int kChunkFmt  = 0x20746D66;  // 'fmt '
 const unsigned int kChunkData = 0x61746164;  // 'data'
 const unsigned int kChunkSmpl = 0x6C706D73;  // 'smpl'
 const unsigned int kChunkMark = 0x70316572;  // 're1p'
+const unsigned int kChunkFact = 0x74636166;  // 'fact'
 
 unsigned int rd32(const unsigned char* p)
 {
@@ -56,6 +57,8 @@ int LoadWav(unsigned char* data, size_t size, AudioFileData* out)
     if (size < 44 || memcmp(data, "RIFF", 4) != 0) return 0;
     size_t offs = 12;
     int channels = 1, rate = 22050, bits = 8;
+    int tag = 1, blockAlign = 0, spb = 0;
+    unsigned int factFrames = 0;
     unsigned char* pcm = NULL;
     unsigned int pcmSize = 0;
     unsigned int loopStart = 0, loopLast = 0;
@@ -65,9 +68,14 @@ int LoadWav(unsigned char* data, size_t size, AudioFileData* out)
         const unsigned int len = rd32(data + offs + 4);
         const unsigned char* body = data + offs + 8;
         if (id == kChunkFmt && len >= 16 && offs + 8 + 16 <= size) {
+            tag = body[0] | (body[1] << 8);
             channels = body[2] | (body[3] << 8);
             rate = (int)rd32(body + 4);
+            blockAlign = body[12] | (body[13] << 8);
             bits = body[14] | (body[15] << 8);
+            if (len >= 20 && offs + 8 + 20 <= size) spb = body[18] | (body[19] << 8);
+        } else if (id == kChunkFact && len >= 4 && offs + 8 + 4 <= size) {
+            factFrames = rd32(body);
         } else if (id == kChunkData) {
             pcm = (unsigned char*)body;
             pcmSize = len;
@@ -83,6 +91,37 @@ int LoadWav(unsigned char* data, size_t size, AudioFileData* out)
         }
         offs += 8 + (size_t)len + (len & 1);
     }
+#if defined(__DREAMCAST__)
+    // IMA ADPCM (tools/dreamcast/compress_audio.py): kept compressed, the
+    // Dreamcast mixer decodes one block at a time (platform/dreamcast/audio.cpp).
+    if (tag == 0x11) {
+        if (pcm == NULL || pcmSize == 0 || channels < 1 || channels > 2 || bits != 4 ||
+            blockAlign < 4 * channels + 4 || (blockAlign % (4 * channels)) != 0) return 0;
+        const int perBlock = (blockAlign - 4 * channels) * 8 / (4 * channels) + 1;
+        if (spb <= 0 || spb > perBlock) spb = perBlock;
+        unsigned int frames = (pcmSize / (unsigned int)blockAlign) * (unsigned int)spb;
+        const unsigned int rem = pcmSize % (unsigned int)blockAlign;
+        if (rem >= (unsigned int)(4 * channels))
+            frames += (rem - 4 * channels) * 8 / (4 * channels) + 1;
+        if (factFrames != 0 && factFrames < frames) frames = factFrames;
+        out->buffer = data;
+        out->pcm = pcm;
+        out->pcmSize = pcmSize;
+        out->sampleRate = rate;
+        out->channels = channels;
+        out->bitsPerSample = 4;
+        out->ps1 = marked;
+        out->formatTag = 0x11;
+        out->blockAlign = blockAlign;
+        out->samplesPerBlock = spb;
+        out->frames = frames;
+        if (marked && hasLoop && loopStart < loopLast && loopLast < frames) {
+            out->loopBegin = loopStart;
+            out->loopEnd = loopLast + 1;
+        }
+        return 1;
+    }
+#endif
     if (pcm == NULL || pcmSize == 0 || channels <= 0 || (bits != 8 && bits != 16)) return 0;
     out->buffer = data;
     out->pcm = pcm;
@@ -91,7 +130,9 @@ int LoadWav(unsigned char* data, size_t size, AudioFileData* out)
     out->channels = channels;
     out->bitsPerSample = bits;
     out->ps1 = marked;
+    out->formatTag = 1;
     const unsigned int frames = pcmSize / (unsigned int)(channels * (bits / 8));
+    out->frames = frames;
     if (marked && hasLoop && loopStart < loopLast && loopLast < frames) {
         out->loopBegin = loopStart;
         out->loopEnd = loopLast + 1;
@@ -203,10 +244,10 @@ int AudioFile_Load(const char* path, AudioFileData* out)
     return 1;
 }
 
-int AudioFile_TreeHasPs1Audio(void)
+int AudioFile_TreeHasCDAudio(void)
 {
     char rooted[260];
-    const char* p = ResolveAssetRoot(GAME_DATA_ROOT "sound/ps1audio.txt", rooted, sizeof(rooted));
+    const char* p = ResolveAssetRoot(GAME_DATA_ROOT "sound/audio.txt", rooted, sizeof(rooted));
     char norm[260];
     return FileExists(plat_normalize_path(p, norm, sizeof(norm)));
 }

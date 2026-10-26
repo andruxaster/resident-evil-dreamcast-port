@@ -1702,6 +1702,12 @@ static int PSXObject_EnumKind(int maxKinds, int* table, unsigned int* pkt, int n
                 } while (i < kindCount);
             }
             if (i == kindCount) {
+                // The original checks AFTER writing the entry, which writes one
+                // entry past the caller's table when it is full; check first.
+                if (kindCount >= maxKinds) {
+                    PSXObjDebugPrint("MarniSystem PSXObject::EnumKind: too many kinds\n");
+                    return 0;
+                }
                 kindCount = kindCount + 1;
                 PSXObject_KindDataSet(newEntry, *pkt,
                                       (short)(pkt[1] >> 0x10),
@@ -1883,6 +1889,16 @@ static void PSXObjReadNormal(PSXObjVtx* v, int normBase, unsigned int idx)
 //   objIndex    - object index (original passes 0)
 //   bankOrTpage - selected texture page (-1 = auto-detect); original passes the depth
 //   texRef      - UV divisor (texture page width, from texBank + 0x2C)
+// Port extension, not in the original: the bound texture's height when it is
+// taller than one 256-line page (Saturn-converted models). 0 = the original
+// behaviour, V / 256. Set around one Store call by CreateTmdObjectInternal.
+static int s_psxObjTexHeight = 0;
+
+void PSXObject_SetTexHeight(int height)
+{
+    s_psxObjTexHeight = height;
+}
+
 int PSXObject_Store(CMarniDirect3DTMD* self, int* tmdHdr, int objIndex,
                     int bankOrTpage, int texRef)
 {
@@ -1918,8 +1934,20 @@ int PSXObject_Store(CMarniDirect3DTMD* self, int* tmdHdr, int objIndex,
 
     // Enumerate distinct primitive kinds (max 100 entries of 5 DWORDs)
     int kindTable[100 * 5];
+    // Guard the walk: EnumKind writes one 5-dword entry per distinct kind and a
+    // packet count read from a bad table runs it off kindTable (stack smash). A
+    // real object has few kinds and its packets are all 0x34000609-style, so a
+    // count this large is a corrupt table, not a model.
+    if (objEntry[5] < 0 || objEntry[5] > 20000) {
+        PSXObjDebugPrint("PSXObject::Store: object %d claims %d packets (hdr %p flags %x prim %p vert %p norm %p)\n",
+                         objIndex, objEntry[5], tmdHdr, tmdHdr[1], (void*)primPtr, (void*)vertBase, (void*)normBase);
+        return 0;
+    }
     int kindCount = PSXObject_EnumKind(100, kindTable, (unsigned int*)primPtr, objEntry[5]);
     if (kindCount >= 0x11 || kindCount == 0) {
+        PSXObjDebugPrint("PSXObject::Store: object %d np=%d hdr %p flags %x prim %p vert %p norm %p first %08x %08x %08x\n",
+                         objIndex, objEntry[5], tmdHdr, tmdHdr[1], (void*)primPtr, (void*)vertBase, (void*)normBase,
+                         ((unsigned*)primPtr)[0], ((unsigned*)primPtr)[1], ((unsigned*)primPtr)[2]);
         PSXObjDebugPrint("MarniSystem PSXObject::Store: kind enumeration failed\n");
         return 0;
     }
@@ -2148,6 +2176,16 @@ int PSXObject_Store(CMarniDirect3DTMD* self, int* tmdHdr, int objIndex,
                         v1.v = (float)*(BYTE*)((BYTE*)pkt + 9) * 0.00390625f;
                         v2.u = (float)(pkt[3] & 0xFF) / texW + ubase;
                         v2.v = (float)*(BYTE*)((BYTE*)pkt + 0xD) * 0.00390625f;
+                        if (s_psxObjTexHeight > 256) {
+                            // Port extension (Saturn models, tools/saturn_emd.py):
+                            // a TIM taller than one page. The packet's pad
+                            // halfword after (u2, v2) carries the 256-line page.
+                            float pageV = (float)(pkt[3] >> 16) * 256.0f;
+                            float texH  = (float)s_psxObjTexHeight;
+                            v0.v = ((float)*(BYTE*)((BYTE*)pkt + 5)   + pageV) / texH;
+                            v1.v = ((float)*(BYTE*)((BYTE*)pkt + 9)   + pageV) / texH;
+                            v2.v = ((float)*(BYTE*)((BYTE*)pkt + 0xD) + pageV) / texH;
+                        }
                         if (v0.u == v1.u || v2.u == v1.u || v0.u == v2.u) v1.u += 0.0001f;
                         if (v0.v == v1.v || v2.v == v1.v || v0.v == v2.v) v1.v += 0.0001f;
                         v0.r = v0.g = v0.b = 1.0f;

@@ -59,6 +59,8 @@ enum ZombieBehavior {
     ZOMBIE_BEH_7                = 7,  // laying down eating
     ZOMBIE_BEH_8                = 8,
     ZOMBIE_BEH_9                = 9,
+    // Sega Saturn: the Battle Game's Zombie Wesker (arena 12) - chase, double HP.
+    ZOMBIE_BEH_SATURN_WESKER    = 9,
     ZOMBIE_BEH_10               = 10, // lying on floor
     // Director's Cut only - the one entry its zombie_states_table adds, which
     // lands on behaviour 11 (the port's spare states[21]). dc_standup_lunge.

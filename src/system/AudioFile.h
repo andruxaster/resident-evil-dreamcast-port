@@ -29,6 +29,12 @@ typedef struct AudioFileData {
     int            ps1;        // written by the asset migrator (PS1 audio)
     unsigned int   loopBegin;  // frames; loopEnd > loopBegin only when set
     unsigned int   loopEnd;    // frames, exclusive
+    // IMA ADPCM WAV (format 0x11) - Dreamcast only, the other backends never
+    // see one: bitsPerSample is 4, `pcm`/`pcmSize` are the compressed blocks.
+    int            formatTag;       // 1 = PCM, 0x11 = IMA ADPCM
+    int            blockAlign;      // IMA: bytes per block (all channels)
+    int            samplesPerBlock; // IMA: frames per block
+    unsigned int   frames;          // IMA: total frames ('fact' or computed)
 } AudioFileData;
 
 // Which file `path` (already run through ResolveAssetRoot) names on disk: for a
@@ -41,9 +47,9 @@ int AudioFile_Find(const char* path, char* out, size_t outSize);
 int AudioFile_Load(const char* path, AudioFileData* out);
 
 // 1 when the active tree's Sound folder carries the migrator's PS1 audio
-// marker (sound\ps1audio.txt). The backends then mix at 44.1 kHz: the PS1
+// marker (sound\audio.txt). The backends then mix at 44.1 kHz: the PS1/Saturn
 // files are 37.8/44.1 kHz, which the PC's 22.05 kHz mix would throw away.
-int AudioFile_TreeHasPs1Audio(void);
+int AudioFile_TreeHasCDAudio(void);
 
 #ifdef __cplusplus
 }
