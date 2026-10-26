@@ -506,7 +506,9 @@ BOOL MarniDX::Create(HWND hWnd, int width, int height, BOOL fullScreen,
         if (GetMonitorInfoA(MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST), &mi)) {
             // Done BEFORE the device exists so the resulting WM_SIZE lands
             // while ready==FALSE and cannot trigger a swap-chain resize.
-            SetWindowPos(hWnd, HWND_TOPMOST,
+            // HWND_TOP, not HWND_TOPMOST: a topmost window stays in front of
+            // the app alt-tab switches to.
+            SetWindowPos(hWnd, HWND_TOP,
                          mi.rcMonitor.left, mi.rcMonitor.top,
                          mi.rcMonitor.right - mi.rcMonitor.left,
                          mi.rcMonitor.bottom - mi.rcMonitor.top,

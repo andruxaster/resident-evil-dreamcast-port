@@ -4160,8 +4160,17 @@ static unsigned int player_find_aim_target(void)
 // there is no reticle-follow turn; the gun hold input (0x8003f830) has no raw-pad
 // lock-on branch, so behaviour 0x1a (lock-on fire, 0x80041094) is never entered.
 // Both are the Japanese release's behaviour, which the PC release kept.
+//
+// The Director's Cut has them back (SLUS_005.51): the gun-aim state 0x8003ea08
+// and the knife raise 0x80040b98 scan and turn toward a locked target (gated by
+// 0x80090568 = 1, the g_aimReticleEnabled twin), and the gun hold 0x8003f008
+// enters lock-on behaviour 0x1a (0x80040880) on the raw pad. Only the knife
+// hold 0x80040d78 has no lock-on entry: its knife turn (0x16, 0x800414f0) is
+// still in the behaviour table but nothing reaches it. Western difficulty
+// (Globals.h) turns all of it off in the DC too, except in TRAINING.
 //   player_autoaim_follow_enabled - the reticle scan and the follow turn
-//   player_lockon_enabled         - the raw-pad lock-on / knife turn entries
+//   player_lockon_enabled         - the gun hold's raw-pad lock-on entry
+//   player_knife_lockon_enabled   - the knife hold's knife turn entry
 // ============================================================================
 static inline bool player_autoaim_follow_enabled(void)
 {
@@ -4170,6 +4179,10 @@ static inline bool player_autoaim_follow_enabled(void)
 static inline bool player_lockon_enabled(void)
 {
     return !western_difficulty();
+}
+static inline bool player_knife_lockon_enabled(void)
+{
+    return !western_difficulty() && !g_bDcMode;
 }
 
 // ============================================================================
@@ -5609,7 +5622,7 @@ static void player_behavior_13_knife_hold(void)
         g_playerEntity.action_state = 0;
         return;
     }
-    if (player_lockon_enabled() && (g_PlayerPadHeld & 4) != 0 && player_find_aim_target() != 0) {
+    if (player_knife_lockon_enabled() && (g_PlayerPadHeld & 4) != 0 && player_find_aim_target() != 0) {
         g_playerEntity.action_behavior = 0x16;   // knife auto-aim turn
         g_playerEntity.action_state = 0;
         return;

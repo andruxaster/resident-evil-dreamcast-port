@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.1](https://github.com/ecruells/resident-evil-pc-decomp/compare/residentevil-v1.4.0...residentevil-v1.4.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* dc mode is forcing western difficulty by default ([9c47820](https://github.com/ecruells/resident-evil-pc-decomp/commit/9c47820d956279ba2f9ea356bcaa3422d9dc9781))
+* **gui:** cannot go to the desktop doing alt-tab ([8fea9af](https://github.com/ecruells/resident-evil-pc-decomp/commit/8fea9afcc6636e519c77a12deebcbce0cf198d3a))
+* **saturn:** Second tyrant theme playing from looping point instead from the start ([41e9887](https://github.com/ecruells/resident-evil-pc-decomp/commit/41e988742408c9b61bf52f802e13217ba774440b))
+
 ## [1.4.0](https://github.com/ecruells/resident-evil-pc-decomp/compare/residentevil-v1.3.0...residentevil-v1.4.0) (2026-10-23)
 
 

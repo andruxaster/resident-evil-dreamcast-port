@@ -403,10 +403,18 @@ unsigned char apply_weapon_damage(unsigned int weapon_id)
         // 0x40000 bit -> 0x8008B59A, (bits & 0x30000) == 0x20000 ->
         // 0x8008BEFA, else the base column - so ADVANCED* reads the base
         // column, exactly as the difficulty byte does here).
+        //
+        // Port: that base column IS the PC's first-playthrough damage (200 of
+        // 200 records), so Western difficulty (Globals.h, never in TRAINING)
+        // swaps it for the second-playthrough damage - the PS1 USA table.
+        // ADVANCED keeps its own column. The hit states are equal in all of
+        // them.
         if (g_DcDifficulty == DC_DIFFICULTY_TRAINING) {
             damage = g_dcWeaponDamageTraining[tableIdx];
         } else if (g_DcDifficulty == DC_DIFFICULTY_ADVANCED) {
             damage = g_dcWeaponDamageAdvanced[tableIdx];
+        } else if (western_difficulty()) {
+            damage = g_weaponHitRecordsSecondRun[tableIdx].dmg;
         } else {
             damage = rec->dmg;              // STANDARD and ADVANCED* share this column
         }

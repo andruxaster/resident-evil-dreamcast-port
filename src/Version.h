@@ -17,5 +17,5 @@
 #pragma once
 
 // x-release-please-start-version
-#define GAME_VERSION_STRING "1.4.0"
+#define GAME_VERSION_STRING "1.4.1"
 // x-release-please-end

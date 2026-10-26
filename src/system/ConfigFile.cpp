@@ -575,7 +575,7 @@ BOOL ConfigFile_Load(void)
     // Saturn Battle Game title item, forced on without an ending. The unlock
     // itself still lives in the save block; this only overrides the test.
     g_bSaturnBattleGame = ReadInt(path, "Game", "BattleGame", 0) != 0;
-    // Western difficulty for the PC release; Saturn and DC force it by mode.
+    // Western difficulty for the PC release and the DC (not TRAINING); the USA Saturn forces it.
     g_bWesternDifficultyOption = ReadInt(path, "Game", "WesternDifficulty", 0) != 0;
     // Port-added: high-resolution texture replacement and the dump that feeds
     // it (system/HdTextures.h).

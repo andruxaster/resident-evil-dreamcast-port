@@ -482,9 +482,15 @@ BOOL CreateGameWindow(int nCmdShow)
     // size, so the border must not be draggable and the maximise button must
     // show up greyed out. WS_OVERLAPPEDWINDOW carries both of those bits, which
     // is what made this port resizable.
+    // Fullscreen is a borderless window over the monitor (MarniDX::Create),
+    // not the original's DirectDraw exclusive mode, which Windows minimised on
+    // alt-tab. It must NOT be WS_EX_TOPMOST: a topmost window stays above every
+    // normal window after it loses focus, so alt-tab moved the focus away but
+    // left the game covering the screen. A non-topmost window over the whole
+    // monitor still hides the taskbar while it is the foreground window.
     if (g_bFullScreen) {
         dwStyle = WS_POPUP | WS_CLIPCHILDREN;
-        dwExStyle = WS_EX_TOPMOST;
+        dwExStyle = WS_EX_APPWINDOW;
     } else {
         dwStyle = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
         dwExStyle = WS_EX_APPWINDOW;
@@ -636,11 +642,12 @@ static void ApplyPendingDisplaySettings(void)
     // 0x00441c15), plus WS_VISIBLE because the window is already shown.
     if (g_bFullScreen) {
         SetWindowLongA(g_hWnd, GWL_STYLE, WS_POPUP | WS_CLIPCHILDREN | WS_VISIBLE);
-        SetWindowLongA(g_hWnd, GWL_EXSTYLE, WS_EX_TOPMOST);
+        // Not topmost: see CreateGameWindow (alt-tab could not leave it).
+        SetWindowLongA(g_hWnd, GWL_EXSTYLE, WS_EX_APPWINDOW);
         // Borderless: the window covers the monitor and the WM_SIZE this
         // sends takes the back buffer to the monitor's size (MarniDX keeps the
         // 4:3 picture inside it).
-        SetWindowPos(g_hWnd, HWND_TOPMOST,
+        SetWindowPos(g_hWnd, HWND_NOTOPMOST,
                      mi.rcMonitor.left, mi.rcMonitor.top,
                      mi.rcMonitor.right - mi.rcMonitor.left,
                      mi.rcMonitor.bottom - mi.rcMonitor.top,

@@ -174,6 +174,27 @@ const unsigned char hunter_pounce_chance_mid[16] = {
 // ============================================================================
 const unsigned char hunter_player_health_gate[2] = { 105, 72 };
 
+// Port: the gate is per release. 105 / 72 is the PC's and the Japanese
+// Saturn's (GAME1/2/5). The PS1 USA overlays (STAGE3/6/7), the USA Saturn
+// (GAME1 0x6ebdc, GAME2 0x7090c, GAME5 0x74758) and the Director's Cut keep
+// {98, 67}; the DC's Hunter init (STAGE3 0x80112be0, STAGE6 0x80119cb0,
+// STAGE7 0x801150bc) rewrites it to {75, 52} when g_status_flags & 0x20000
+// (ADVANCED and ADVANCED*).
+static const unsigned char hunter_player_health_gate_western[2]  = { 98, 67 };
+static const unsigned char hunter_player_health_gate_advanced[2] = { 75, 52 };
+
+static unsigned short hunter_pounce_health_gate(void)
+{
+    const int character = g_playerEntity.id & 1;
+    if (g_bDcMode && (g_main_state_flags2 & MSF2_DC_ADVANCED) != 0) {
+        return hunter_player_health_gate_advanced[character];
+    }
+    if (g_bDcMode || western_difficulty()) {
+        return hunter_player_health_gate_western[character];
+    }
+    return hunter_player_health_gate[character];
+}
+
 // ============================================================================
 // hunter_behavior_seed_tbl @ 0x004b488f - the initial behaviour roll when the
 // action/death layers engage, indexed by hit_state & 7.
@@ -783,7 +804,7 @@ static void hunter_variant_2_ai(void) // 0x00416ca0
     H_POUNCE_LATCH = 0;
 
     if ((unsigned short)playerHealth <
-        (unsigned short)hunter_player_health_gate[g_playerEntity.id & 1] &&
+        hunter_pounce_health_gate() &&
         0 < playerHealth) {
         H_POISE = 0;
         if (H_HEALTH < 0x28) {

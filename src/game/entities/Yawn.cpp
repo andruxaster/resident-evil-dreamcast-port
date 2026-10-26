@@ -2398,7 +2398,7 @@ void yawn_update(void)
                 // 0x06077FF4 / GAME5 0x0607F8CC, a flat add #-15) all do a flat
                 // 15 per tick. It equals the PC's first-playthrough branch, so
                 // Western takes that one.
-                const bool flatHit = western_difficulty();
+                const bool flatHit = western_difficulty() || g_bDcMode;   // the DC overlays, every difficulty
                 if (flatHit || Flg_ck((int)&g_ScenarioFlags, SCENARIO_FLAG_SECOND_PLAYTHROUGH) == 0) {
                     g_EnemiesList[0].health = (short)(g_EnemiesList[0].health - 0xf);
                 } else {

@@ -2912,10 +2912,6 @@ static void tyrant_state_scd(void)
         if (b != lastBehavior || ENTITY->action_state != lastSub) {
             lastBehavior = b;
             lastSub = ENTITY->action_state;
-            dbg_printf("[TYRANT] scd behaviour %u sub %u  y=%d flg1e=%u flg1f=%u victim=%p\n",
-                       b, ENTITY->action_state, ei(ENTITY, 0x38),
-                       Flg_ck((int)g_SysFlags, 0x1e), Flg_ck((int)g_SysFlags, 0x1f),
-                       (void*)g_emScdVictim);
         }
         if (b < 18 && s_emScdBehaviors[b] != nullptr) s_emScdBehaviors[b]();
         else em_scd_out_of_range();

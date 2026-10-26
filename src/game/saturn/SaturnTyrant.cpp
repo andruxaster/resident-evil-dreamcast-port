@@ -122,6 +122,17 @@ void saturn_bgm_play(unsigned int ch)                       // cmd_bgm_play
     g_BGM_STATE |= 1u << (ch + 3);
 }
 
+// 0x060582CC starts the song from its first step: the Sega driver has no
+// paused sequence to resume. The PC's PlaySound (0x0041ee60) resumes a stopped
+// buffer from its cursor - so Bgm_24, stopped mid-loop by the dissolve, came
+// back at its loop region - and rewinds only one that is still playing. The
+// second call is that rewind.
+static void saturn_bgm_restart(unsigned int ch)
+{
+    saturn_bgm_play(ch);
+    saturn_bgm_play(ch);
+}
+
 void saturn_bgm_stop(unsigned int ch)                       // cmd_bgm_stop
 {
     const unsigned int bit = 1u << (ch + 3);
@@ -515,7 +526,7 @@ void saturn_release_run(Entity* e)
             sb(e, 0x185) = 2;
             saturn_bgm_stop(0);
             saturn_bgm_stop(1);
-            saturn_bgm_play(2);                 // Bgm_24 again
+            saturn_bgm_restart(2);              // Bgm_24 again, from the start
             set_camera(0);
         }
         sb(e, 0x188)++;

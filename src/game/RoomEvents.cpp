@@ -914,8 +914,18 @@ void room_event_item_pickup(void)
     // and Saturn USA take the record's own quantity, and every ribbon record in
     // their RDTs is 2 (the PC RDTs carry 2s and 3s; tools verified the 20 PS1
     // records), so Western difficulty (Globals.h) pins 2.
+    // The Director's Cut takes the record's quantity too (SLUS_005.51
+    // IncludeCurrentItem 0x8002ce28, no override); its rooms say 3 in all but
+    // four STANDARD records (ROOM30C0, 5051, 6001, 7180 keep the PS1 USA's 2).
+    // Those four are not in the DC overlay; the PC tree's copies match the
+    // disc except ROOM5051 (PC 3, DC 2). Western difficulty in the DC still
+    // pins 2.
     if (itemId == ITEM_INK_RIBBONS) {
-        quantity = western_difficulty() ? 2 : 3;
+        if (western_difficulty()) {
+            quantity = 2;
+        } else if (!g_bDcMode) {
+            quantity = 3;
+        }
     }
     // DC TRAINING and ADVANCED* double the pick-up: the DC's IncludeCurrentItem
     // (SLUS_005.51 0x8002ce28) shifts the record quantity left once for ammo and

@@ -492,8 +492,56 @@ static void page_root(unsigned int nav)
     }
 }
 
+// The game being played, for the in-game ROOT: information only, never a row.
+// It reads the running session (g_GameMode, the region, g_DcDifficulty and
+// western_difficulty()), not what the GAME page would write to config.ini.
+static const char* ingame_mode_name(void)
+{
+    if (g_bSaturnMode && g_saturnBattleActive) return "SATURN BATTLE GAME";
+    if (g_bSaturnMode) return "SATURN";
+    if (g_bDcMode) return "DIRECTOR'S CUT";
+    return "ORIGINAL";
+}
+
+static const char* ingame_rules_name(void)
+{
+    if (g_bDcMode) {
+        switch (g_DcDifficulty) {
+        case DC_DIFFICULTY_TRAINING:    return "TRAINING";
+        case DC_DIFFICULTY_ADVANCED:    return "ADVANCED";
+        case DC_DIFFICULTY_ADVANCED_HOLD: return "ADVANCED*";
+        default:                        return "STANDARD";
+        }
+    }
+    // The Japanese Saturn keeps the PC's rules (Globals.h western_difficulty).
+    return western_difficulty() ? "WESTERN" : "ORIGINAL";
+}
+
+static void ingame_draw_session_info(void)
+{
+    const int y = OPT_HELP_Y - 3 * OPT_ROW_PITCH;
+    const int right = OPT_ROW_X + 288;
+    char value[40];
+
+    opt_rect(OPT_ROW_X - 4, y - 6, 288 + 8, 1, 0x40, 60);
+    snprintf(value, sizeof(value), "%s (%s)", ingame_mode_name(),
+             GetAssetVersion() ? "JPN" : "USA");
+    opt_text(OPT_ROW_X, y, COL_DISABLED, "PLAYING");
+    opt_text_right(right - ((int)strlen(value) + 2) * 8, y, COL_NORMAL, "%s", value);
+
+    if (g_bDcMode && western_difficulty()) {
+        snprintf(value, sizeof(value), "%s + WESTERN", ingame_rules_name());
+    } else {
+        snprintf(value, sizeof(value), "%s", ingame_rules_name());
+    }
+    opt_text(OPT_ROW_X, y + OPT_ROW_PITCH, COL_DISABLED, "DIFFICULTY");
+    opt_text_right(right - ((int)strlen(value) + 2) * 8, y + OPT_ROW_PITCH, COL_NORMAL,
+                   "%s", value);
+}
+
 // ROOT, as the in-game menu shows it: DISPLAY, INPUT and the way back to the
-// title. The cancel key closes the menu and the game goes on.
+// title. The cancel key closes the menu and the game goes on. Below the rows,
+// the mode and difficulty being played (information only).
 static void page_root_ingame(unsigned int nav)
 {
     s_rowCount = 0;
@@ -540,6 +588,7 @@ static void page_root_ingame(unsigned int nav)
 
     opt_draw_frame("OPTIONS");
     opt_draw_rows(*cursor, 288);
+    ingame_draw_session_info();
     if (s_confirmQuit) {
         const int y = OPT_ROW_Y + 4 * OPT_ROW_PITCH + 8;
         opt_rect(OPT_ROW_X - 4, y - 4, 288 + 8, 40, 0x30, 40);
@@ -1000,7 +1049,7 @@ static void page_game(unsigned int nav)
     opt_row_value(r, g_bSaturnBattleGame ? "ON" : "OFF", 1);
     r->enabled = battleOk;
 
-    r = opt_row("WESTERN DIFFICULTY", "PS1/SATURN USA RULES IN ORIGINAL MODE");
+    r = opt_row("WESTERN DIFFICULTY", "PS1 USA RULES IN OG AND DC (NOT TRAINING)");
     opt_row_value(r, g_bWesternDifficultyOption ? "ON" : "OFF", 1);
 
     r = opt_row("HD MODE", "HD BACKGROUNDS, TEXTURES AND FONTS. NEEDS RESTART");

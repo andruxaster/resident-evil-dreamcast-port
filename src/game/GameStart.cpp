@@ -449,6 +449,19 @@ void InitializeGame(void)
 
         if ((g_main_state_flags2 & MSF2_ATTRACT_DEMO) == 0) {
             InitPlayerData();
+            // DC InitializeGame (SLUS_005.51 0x8002958c): TRAINING and
+            // ADVANCED* start with two stacks of 30 handgun clips in the item
+            // box - the word 0x1e0b1e0b stored at bio card +0x2C4
+            // (0x800c8724), item box slots 0 and 1. STANDARD and ADVANCED
+            // leave the box as loaded. Before the bonus weapons, which take
+            // the first free slots.
+            if (g_bDcMode && (g_DcDifficulty == DC_DIFFICULTY_TRAINING ||
+                              g_DcDifficulty == DC_DIFFICULTY_ADVANCED_HOLD)) {
+                g_itemboxSlots[0].Id = ITEM_CLIP;
+                g_itemboxSlots[0].qty = 30;
+                g_itemboxSlots[1].Id = ITEM_CLIP;
+                g_itemboxSlots[1].qty = 30;
+            }
             // Port: the bonus weapons switched on in OPTIONS > BONUS go into
             // the item box (Bonus.h); the start inventory stays as built.
             bonus_grant_start_weapons();
@@ -525,9 +538,10 @@ void InitializeGame(void)
     // Western difficulty (Globals.h) raises the same flag: the PS1 USA and Saturn
     // USA stage code has no scenario-flag test at all (no Flg_ck call in any USA
     // STAGEn.EXE overlay), so every enemy runs the PC's second-playthrough
-    // branch, and the Saturn campaign / Battle Game, the DC's STANDARD and
-    // ADVANCED, and a PC game with [Game] WesternDifficulty=1 all take it from
-    // the first frame. Set after BOTH the new-game and continue branches, so a
+    // branch, and the Saturn campaign / Battle Game and a PC game with
+    // [Game] WesternDifficulty=1 take it from the first frame. (The DC's stage
+    // overlays have no Flg_ck call either - only the hard zombie-bite row - so
+    // every DC difficulty keeps the flag up through the g_bDcMode term.) Set after BOTH the new-game and continue branches, so a
     // save made on the other rules still plays on this session's.
     if ((g_bDcMode || western_difficulty()) && (g_main_state_flags2 & MSF2_ATTRACT_DEMO) == 0) {
         Flg_on((int)g_ScenarioFlags, SCENARIO_FLAG_SECOND_PLAYTHROUGH);

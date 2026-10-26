@@ -2,7 +2,9 @@
 """verify_western_difficulty.py - the evidence behind [Game] WesternDifficulty.
 
 Western difficulty (src/Globals.h western_difficulty()) is what the PS1 USA
-release, the Saturn USA release and the Director's Cut ship as their only rules.
+release and the Saturn USA release ship as their only rules. (The Director's
+Cut has its own: auto-aim, record ribbon quantities, its own damage columns -
+docs/WESTERN_DIFFICULTY.md "The Director's Cut".)
 This re-derives the table claims from the original binaries; run from the repo
 root. Needs assets/og_ResidentEvil.exe, assets/PSX/SLUS_001.70, the PS1 USA disc
 image and the extracted Saturn disc (assets/SATURN_ISO_CONTENT). Needs capstone
@@ -23,6 +25,8 @@ for the overlay checks.
      (12,12,9,9,12,...), at STAGE1 0x80122388 and the same offset in the others.
   4. Yawn hit damage (the one exception): enemy-0 health RMW is a flat -0xf (and
      -0x41) in the USA and DC overlays - the PC's FIRST-playthrough branch.
+  5. Hunter pounce gate: the PC and the Japanese Saturn hold {105, 72}; the PS1
+     USA overlays (STAGE3/6/7) and the USA Saturn GAME1/2/5 hold {98, 67}.
 
 Exit status 1 if a check fails.
 """
@@ -152,9 +156,35 @@ def yawn():
         check("%s Yawn hit is flat -0x41 / -0xf" % st, vals == ["-0x41", "-0xf"], str(vals))
 
 
+def hunter_gate():
+    """5. Hunter pounce gate: player health under {Chris, Jill}."""
+    import saturn_room
+    print("5. Hunter pounce gate")
+    pc = open("assets/og_ResidentEvil.exe", "rb").read()
+    check("PC 0x004b4860 is {105, 72}", list(pc[pc_off(0x4B4860):pc_off(0x4B4860) + 2]) == [105, 72])
+    western = bytes([98, 67, 0, 0])
+    japanese = bytes([105, 72, 0, 0])
+    iso = saturn_room.ps1_iso()
+    for st in ("STAGE3", "STAGE6", "STAGE7"):
+        d = iso.get("/PSX/PROG2/%s.EXE" % st)
+        check("PS1 USA %s carries {98, 67}" % st, western in d)
+    for prg in ("GAME1", "GAME2", "GAME5"):
+        f = os.path.join("assets", "SATURN_ISO_CONTENT", prg + ".PRG")
+        if os.path.exists(f):
+            check("Saturn USA %s carries {98, 67}" % prg, western in open(f, "rb").read())
+        f = os.path.join("assets", "SATURN_JPN_ISO_CONTENT", prg + ".PRG")
+        if os.path.exists(f):
+            d = open(f, "rb").read()
+            check("Saturn JPN %s carries {105, 72}" % prg, japanese in d and western not in d)
+    src = open(os.path.join("src", "game", "entities", "Hunter.cpp"), encoding="utf-8").read()
+    check("Hunter.cpp has the western and ADVANCED gates",
+          "{ 98, 67 }" in src and "{ 75, 52 }" in src)
+
+
 if __name__ == "__main__":
     weapon_tables()
     overlays()
     yawn()
+    hunter_gate()
     print("PASS" if ok else "FAIL")
     sys.exit(0 if ok else 1)
