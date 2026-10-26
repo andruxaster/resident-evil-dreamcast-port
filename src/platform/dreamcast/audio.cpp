@@ -9,8 +9,10 @@
 //   - GetStatus returns 1 while the bank is playing, 0 otherwise
 //
 // Dreamcast specifics
-//   - Output: one stereo KOS sound stream (snd_stream) at 22050 Hz, or 44100
-//     Hz for the asset migrator's PS1 audio tree. KOS streams are pull-based
+//   - Output: one stereo KOS sound stream (snd_stream) at 22050 Hz, always
+//     (not 44100 for the asset migrator's PS1 audio tree, as on PC/Linux:
+//     that doubles the mixing work; convert the files to 22050 instead -
+//     tools/dreamcast/compress_audio.py --max-rate 22050). KOS streams are pull-based
 //     but only progress when snd_stream_poll() runs, so a small KOS thread
 //     polls every few ms; a mutex guards the banks against the game thread.
 //   - Banks stay in main RAM as decoded PCM (AudioFile_Load), exactly like the
@@ -708,7 +710,8 @@ void InitializeSoundSystem(void)
     g_pDirectSound = mgr;
     g_SoundManager = (void*)mgr;
 
-    s_outRate = AudioFile_TreeHasCDAudio() ? 44100 : 22050;   // MERGE140: renamed upstream
+    // Always 22050 on the Dreamcast, PS1 audio tree or not (see the top).
+    s_outRate = 22050;
     if (RE1_DC_SILENT) {
         printf("[AUDIO] RE1_DC_SILENT build - no AICA stream\n");
         StartPollThread();          // the watchdog lives there
