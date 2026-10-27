@@ -13,6 +13,17 @@
 #include <stdint.h>
 #include <vector>
 
+// Dreamcast: the staff text is not built into one atlas. STAFF.STF has 300
+// strips, i.e. a 256 x 6000 texture - 6 MB of RGBA to build, and taller than
+// the PowerVR's 1024 lines, so it could never be created. Instead each strip is
+// decoded from the loaded file when it comes on screen, into a small texture
+// of its own, kept in a little LRU cache (at most ~16 strips are visible).
+#if defined(__DREAMCAST__)
+#define PS1_CREDITS_STRIP_CACHE 1
+#else
+#define PS1_CREDITS_STRIP_CACHE 0
+#endif
+
 namespace {
 
 constexpr size_t kStfHeaderSize = 0x200;
@@ -137,6 +148,20 @@ constexpr int kCreditsX = 32;
 static BYTE s_staffBuffer[0x30000];
 static BYTE s_bioBuffer[0x4000];
 static std::vector<DWORD> s_atlas;
+#if PS1_CREDITS_STRIP_CACHE
+constexpr int kStripCacheSize = 24;
+struct StripTex {
+    int strip;                 // -1 = empty
+    MarniHandle tex;
+    unsigned int used;         // LRU clock
+};
+static StripTex s_stripCache[kStripCacheSize];
+static unsigned int s_stripClock = 0;
+static uint32_t s_stripOffset[512];          // kMaxStrips record offsets in s_staffBuffer
+static uint16_t s_stfPalette[256];
+static size_t s_stfSize = 0;
+static DWORD s_stripRgba[256 * 20];          // kStripWidth x kAtlasStride
+#endif
 static DWORD s_bioPixels[256 * 68];
 static MarniHandle s_stripTexture = MARNI_NULL_HANDLE;
 static MarniHandle s_bioTexture = MARNI_NULL_HANDLE;
@@ -177,6 +202,60 @@ DWORD PsxColor(uint16_t color, bool transparentBit)
            (static_cast<DWORD>(g) << 8) | static_cast<DWORD>(r);
 }
 
+// One strip record of an .STF at `offset`: 1 with its kDecodedStripBytes
+// pixels in `pixels` and the next record's offset, 0 at the end marker (or
+// when no record fits), -1 when the file is malformed.
+int ReadStrip(const BYTE* data, size_t size, size_t offset, BYTE* pixels, size_t* nextOut)
+{
+    if (offset + 6 > size) return 0;
+    uint16_t next = 0;
+    uint16_t countOffset = 0;
+    uint16_t valueOffset = 0;
+    if (!ReadU16(data, size, offset, next) ||
+        !ReadU16(data, size, offset + 2, countOffset) ||
+        !ReadU16(data, size, offset + 4, valueOffset)) {
+        return -1;
+    }
+    if (next == 0xffffu || next == 0) return 0;
+    if (countOffset == 0xffffu || valueOffset == 0xffffu) {
+        if (valueOffset != 0xffffu || countOffset > size - offset ||
+            size - offset - countOffset < kDecodedStripBytes) {
+            return -1;
+        }
+    } else if (countOffset > size - offset || valueOffset > size - offset) {
+        return -1;
+    }
+
+    if (valueOffset == 0xffffu) {
+        std::memcpy(pixels, data + offset + countOffset, kDecodedStripBytes);
+    } else {
+        size_t countPos = offset + countOffset;
+        size_t valuePos = offset + valueOffset;
+        size_t output = 0;
+        bool terminated = false;
+        while (countPos + 2 <= size) {
+            uint16_t run = 0;
+            if (!ReadU16(data, size, countPos, run)) return -1;
+            countPos += 2;
+            if (run == 0) {
+                terminated = true;
+                break;
+            }
+            if (valuePos >= size || run > kDecodedStripBytes - output) return -1;
+            std::memset(pixels + output, data[valuePos], run);
+            output += run;
+            ++valuePos;
+        }
+        if (!terminated || output != kDecodedStripBytes) return -1;
+    }
+
+    if (next > size - offset) return -1;
+    const size_t nextOffset = offset + next;
+    if (nextOffset <= offset) return -1;
+    *nextOut = nextOffset;
+    return 1;
+}
+
 bool BuildStfAtlas(const BYTE* data, size_t size, std::vector<DWORD>& atlas,
                    int& stripCount)
 {
@@ -191,55 +270,14 @@ bool BuildStfAtlas(const BYTE* data, size_t size, std::vector<DWORD>& atlas,
     std::vector<std::vector<BYTE>> decoded;
     size_t offset = kStfHeaderSize;
     stripCount = 0;
-    while (offset + 6 <= size && stripCount < kMaxStrips) {
-        uint16_t next = 0;
-        uint16_t countOffset = 0;
-        uint16_t valueOffset = 0;
-        if (!ReadU16(data, size, offset, next) ||
-            !ReadU16(data, size, offset + 2, countOffset) ||
-            !ReadU16(data, size, offset + 4, valueOffset)) {
-            return false;
-        }
-        if (next == 0xffffu || next == 0) break;
-        if (countOffset == 0xffffu || valueOffset == 0xffffu) {
-            if (valueOffset != 0xffffu || countOffset > size - offset ||
-                size - offset - countOffset < kDecodedStripBytes) {
-                return false;
-            }
-        } else if (countOffset > size - offset || valueOffset > size - offset) {
-            return false;
-        }
-
+    while (stripCount < kMaxStrips) {
         BYTE pixels[kDecodedStripBytes];
-        if (valueOffset == 0xffffu) {
-            std::memcpy(pixels, data + offset + countOffset, kDecodedStripBytes);
-        } else {
-            size_t countPos = offset + countOffset;
-            size_t valuePos = offset + valueOffset;
-            size_t output = 0;
-            bool terminated = false;
-            while (countPos + 2 <= size) {
-                uint16_t run = 0;
-                if (!ReadU16(data, size, countPos, run)) return false;
-                countPos += 2;
-                if (run == 0) {
-                    terminated = true;
-                    break;
-                }
-                if (valuePos >= size || run > kDecodedStripBytes - output) return false;
-                std::memset(pixels + output, data[valuePos], run);
-                output += run;
-                ++valuePos;
-            }
-            if (!terminated || output != kDecodedStripBytes) return false;
-        }
-
+        size_t nextOffset = 0;
+        const int r = ReadStrip(data, size, offset, pixels, &nextOffset);
+        if (r < 0) return false;
+        if (r == 0) break;
         decoded.emplace_back(pixels, pixels + kStripPixels);
         ++stripCount;
-
-        if (next > size - offset) return false;
-        const size_t nextOffset = offset + next;
-        if (nextOffset <= offset) return false;
         offset = nextOffset;
     }
     // The strips are 8-bit CLUT sprites with no ABE (attribute 0x01000000),
@@ -260,6 +298,86 @@ bool BuildStfAtlas(const BYTE* data, size_t size, std::vector<DWORD>& atlas,
     }
     return stripCount != 0;
 }
+
+#if PS1_CREDITS_STRIP_CACHE
+// Walks the file once: the strip count and where each record starts.
+bool IndexStf(const BYTE* data, size_t size, int& stripCount)
+{
+    if (data == NULL || size < kStfHeaderSize + 6) return false;
+    for (size_t i = 0; i < 256; ++i) {
+        if (!ReadU16(data, size, i * 2, s_stfPalette[i])) return false;
+    }
+    size_t offset = kStfHeaderSize;
+    stripCount = 0;
+    while (stripCount < kMaxStrips) {
+        BYTE pixels[kDecodedStripBytes];
+        size_t nextOffset = 0;
+        const int r = ReadStrip(data, size, offset, pixels, &nextOffset);
+        if (r < 0) return false;
+        if (r == 0) break;
+        s_stripOffset[stripCount++] = (uint32_t)offset;
+        offset = nextOffset;
+    }
+    s_stfSize = size;
+    return stripCount != 0;
+}
+
+void StripCacheClear(MarniDX* dx)
+{
+    for (StripTex& c : s_stripCache) {
+        if (c.tex != MARNI_NULL_HANDLE && dx != NULL) dx->DestroyTexture(c.tex);
+        c.tex = MARNI_NULL_HANDLE;
+        c.strip = -1;
+        c.used = 0;
+    }
+    s_stripClock = 0;
+}
+
+// The texture of `strip` (kStripWidth x kAtlasStride, the same padded cell the
+// atlas has), decoded and uploaded on first use.
+MarniHandle StripTexture(int strip)
+{
+    if (strip < 0 || strip >= s_stripCount) return MARNI_NULL_HANDLE;
+    StripTex* victim = &s_stripCache[0];
+    for (StripTex& c : s_stripCache) {
+        if (c.strip == strip && c.tex != MARNI_NULL_HANDLE) {
+            c.used = ++s_stripClock;
+            return c.tex;
+        }
+        if (c.used < victim->used) victim = &c;
+    }
+    MarniDX* dx = Marni_DX();
+    if (victim->tex != MARNI_NULL_HANDLE && dx != NULL) dx->DestroyTexture(victim->tex);
+    victim->tex = MARNI_NULL_HANDLE;
+    victim->strip = -1;
+    victim->used = 0;
+
+    BYTE pixels[kDecodedStripBytes];
+    size_t nextOffset = 0;
+    if (ReadStrip(s_staffBuffer, s_stfSize, s_stripOffset[strip], pixels, &nextOffset) != 1) {
+        return MARNI_NULL_HANDLE;
+    }
+    for (int y = 0; y < kAtlasStride; ++y) {
+        const int sourceY = y - kAtlasPadding;
+        for (int x = 0; x < kStripWidth; ++x) {
+            DWORD color = 0;
+            if (sourceY >= 0 && sourceY < kStripHeight) {
+                const BYTE index = pixels[sourceY * kStripWidth + x];
+                if (s_stfPalette[index] != 0) color = PsxColor(s_stfPalette[index], false);
+            }
+            s_stripRgba[y * kStripWidth + x] = color;
+        }
+    }
+    MarniHandle tex = MARNI_NULL_HANDLE;
+    if (!MarniCreateTexture(kStripWidth, kAtlasStride, 32, s_stripRgba, &tex)) {
+        return MARNI_NULL_HANDLE;
+    }
+    victim->strip = strip;
+    victim->tex = tex;
+    victim->used = ++s_stripClock;
+    return tex;
+}
+#endif
 
 bool BuildBioTexture(const BYTE* data, size_t size)
 {
@@ -397,12 +515,21 @@ DWORD Grey(int level)
 void DrawStrip(MarniDX* dx, int strip, int x, int y, float scaleX, float scaleY,
                DWORD color, MarniBlend blend)
 {
+#if PS1_CREDITS_STRIP_CACHE
+    const MarniHandle tex = StripTexture(strip);
+    if (tex == MARNI_NULL_HANDLE) return;
+    const float v0 = static_cast<float>(kAtlasPadding) / kAtlasStride;
+    const float v1 = static_cast<float>(kAtlasPadding + kStripHeight) / kAtlasStride;
+    dx->DrawSprite(x * scaleX, y * scaleY, kStripWidth * scaleX, kStripHeight * scaleY,
+                   0.0f, v0, 1.0f, v1, color, tex, MARNI_SAMPLER_POINT, blend);
+#else
     const float atlasHeight = static_cast<float>(s_stripCount * kAtlasStride);
     const float v0 = static_cast<float>(strip * kAtlasStride + kAtlasPadding) / atlasHeight;
     const float v1 = static_cast<float>(strip * kAtlasStride + kAtlasPadding + kStripHeight) /
                      atlasHeight;
     dx->DrawSprite(x * scaleX, y * scaleY, kStripWidth * scaleX, kStripHeight * scaleY,
                    0.0f, v0, 1.0f, v1, color, s_stripTexture, MARNI_SAMPLER_POINT, blend);
+#endif
 }
 
 }
@@ -432,7 +559,11 @@ BOOL Ps1EndingCredits_Begin(int endingId, int characterId)
         return FALSE;
     }
 
+#if PS1_CREDITS_STRIP_CACHE
+    if (!IndexStf(s_staffBuffer, staffSize, s_stripCount)) {
+#else
     if (!BuildStfAtlas(s_staffBuffer, staffSize, s_atlas, s_stripCount)) {
+#endif
         dbg_printf("[credits] invalid %s\n", staffPath);
         Ps1EndingCredits_End();
         return FALSE;
@@ -445,12 +576,16 @@ BOOL Ps1EndingCredits_Begin(int endingId, int characterId)
     s_videoCanRender = FALSE;
     s_active = TRUE;
 
+#if !PS1_CREDITS_STRIP_CACHE
     if (!MarniCreateTexture(256, s_stripCount * kAtlasStride, 32,
                             s_atlas.data(), &s_stripTexture)) {
         dbg_printf("[credits] texture creation failed\n");
         Ps1EndingCredits_End();
         return FALSE;
     }
+    // The texture holds the pixels now: give the (up to 6 MB) atlas back.
+    std::vector<DWORD>().swap(s_atlas);
+#endif
 
     const size_t bioSize = LoadFile(GAME_DATA_ROOT "data\\bio.tim",
                                    s_bioBuffer, 0x20);
@@ -469,9 +604,12 @@ void Ps1EndingCredits_End(void)
         if (s_stripTexture != MARNI_NULL_HANDLE) dx->DestroyTexture(s_stripTexture);
         if (s_bioTexture != MARNI_NULL_HANDLE) dx->DestroyTexture(s_bioTexture);
     }
+#if PS1_CREDITS_STRIP_CACHE
+    StripCacheClear(dx);
+#endif
     s_stripTexture = MARNI_NULL_HANDLE;
     s_bioTexture = MARNI_NULL_HANDLE;
-    s_atlas.clear();
+    std::vector<DWORD>().swap(s_atlas);   // clear() would keep the capacity
     s_stripCount = 0;
     s_frame = 0;
     s_startTimeMs = 0;
@@ -679,8 +817,12 @@ static void DrawCastRoll(MarniDX* dx, MarniHandle videoTexture, int frameMs,
 BOOL Ps1EndingCredits_RenderFrame(MarniHandle videoTexture, int frameMs)
 {
     MarniDX* dx = Marni_DX();
-    if (!s_active || !s_videoCanRender || s_stripTexture == MARNI_NULL_HANDLE ||
-        dx == NULL) {
+#if PS1_CREDITS_STRIP_CACHE
+    const bool stripsReady = s_stripCount > 0;
+#else
+    const bool stripsReady = s_stripTexture != MARNI_NULL_HANDLE;
+#endif
+    if (!s_active || !s_videoCanRender || !stripsReady || dx == NULL) {
         return FALSE;
     }
 

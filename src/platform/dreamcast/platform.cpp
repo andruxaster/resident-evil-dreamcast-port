@@ -239,7 +239,13 @@ const char* plat_normalize_path(const char* path, char* buffer, size_t size)
 {
     if (path == NULL || buffer == NULL || size == 0) return path;
 
+    // LEAK_AUDIT_FIX: the cache kept every distinct path ever asked for - one
+    // to five per file the game opens (overlay, .ogg and base probes), so it
+    // only grew through a playthrough (~0.3-1.5 MB in small heap blocks).
+    // /cd lookups are cheap on their own (ResolveCd answers from the cached
+    // directory listings), so the cache is bounded and simply restarts.
     static std::unordered_map<std::string, std::string> s_cache;
+    if (s_cache.size() >= 256) s_cache.clear();
     auto it = s_cache.find(path);
     if (it == s_cache.end()) {
         std::string p = Slashes(path);

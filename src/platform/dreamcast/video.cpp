@@ -39,6 +39,8 @@ uint32_t dc_movie_audio_played(void);
 void     dc_movie_audio_end(void);
 }
 
+extern "C" volatile int g_dcNoShareNext;   // MarniDX_PVR.cpp (LEAK_AUDIT_FIX)
+
 // dc_iso.cpp (file scope: these are C symbols)
 extern "C" {
 int dc_iso_locate(const char* path, uint32_t* lba, uint32_t* size);
@@ -684,7 +686,9 @@ void Present()
     MarniDX* dx = Marni_DX();
     if (dx == nullptr || s_cv.frame == nullptr || s_curFrame < 0) return;
     if (s_tex == MARNI_NULL_HANDLE) {
+        g_dcNoShareNext = 1;   // updated in place every frame: never shared (MarniDX_PVR.cpp)
         s_tex = dx->CreateTexture(s_cv.w, s_cv.h, 32, s_cv.frame, nullptr, nullptr);
+        g_dcNoShareNext = 0;
         if (s_tex == MARNI_NULL_HANDLE) return;
     }
     DWORD bw = 0, bh = 0;

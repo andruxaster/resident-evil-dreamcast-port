@@ -967,6 +967,15 @@ static int VTable_CreateTextureHandle(void* self, void* texDesc,
             // and with an HD picture it is cut from that (above).
             MarniHandle twin = pD3D->m_pDX->CreateTexture(w, h, 32, knock, NULL, NULL);
             operator_delete(knock);
+            // LEAK_AUDIT_FIX: when the only STP entry the texels use is index 0
+            // (already transparent), the knock-out image IS the texture, and a
+            // backend that shares identical textures (Dreamcast) hands `tex`
+            // back. Keyed on itself, the twin's reference could never be
+            // dropped and the texture never freed. No twin is needed then.
+            if (twin == tex) {
+                pD3D->m_pDX->DestroyTexture(twin);
+                twin = MARNI_NULL_HANDLE;
+            }
             if (twin != MARNI_NULL_HANDLE) {
                 // A shared source handle (Dreamcast dedup) already has its
                 // twin, identical to this one: keep that one and drop the
