@@ -13,7 +13,6 @@
 extern "C" size_t dc_fread_whole(FILE* fp, void* dst, size_t size);
 // DC_FAST_LOADS4: /cd files by LBA (platform/dreamcast/dc_iso.cpp).
 extern "C" long dc_iso_load(const char* path, void* dst);
-extern "C" void dc_load_yield(void);              // platform.cpp (LOAD_YIELD)
 #endif
 #include <stdio.h>
 
@@ -61,7 +60,6 @@ size_t LoadFile(const char* path, void* buffer, unsigned char flags)
                 printf("[LOAD] %s: %u KB in %u ms\n", filePath,
                        (unsigned)(got / 1024), (unsigned)dcMs);
             }
-            dc_load_yield();   // LOAD_YIELD: let a frame be drawn during long loads
             return (size_t)got;
         }
     }
