@@ -59,6 +59,10 @@ endif
 HD_SRCS := src/system/HdTextures.cpp src/system/WebpImage.cpp \
            src/game/HdText.cpp src/game/RoomBackgroundWebp.cpp
 SHARED_SRCS := $(filter-out $(HD_SRCS),$(SHARED_SRCS))
+# The title / in-game OPTIONS menu (display modes, keyboard binding, restart)
+# has no place on the Dreamcast: its entry points are compiled out there
+# (TitleScreen.cpp, GameLoop.cpp), so the file is not built.
+SHARED_SRCS := $(filter-out src/game/GameOptions.cpp,$(SHARED_SRCS))
 
 DC_SRCS := \
     src/platform/dreamcast/platform.cpp \
