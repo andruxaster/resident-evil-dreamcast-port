@@ -13,20 +13,6 @@
 #include <cstring>
 #include "../system/AssetPath.h"
 #include "../system/HdTextures.h"   // HD item icons (port-only)
-#include "../platform/platform.h"
-
-// LOAD_YIELD (Dreamcast test branch): file loads in InitializeGame let a frame
-// be drawn (platform/dreamcast/platform.cpp, dc_load_yield) so the loading
-// text types on, and each step's time goes to the log as [INIT].
-#if defined(__DREAMCAST__)
-extern "C" volatile int g_dcLoadYield;
-static DWORD s_initT0 = 0, s_initPrev = 0;
-#define INIT_STEP(name) do { const DWORD t_ = plat_time_ms(); \
-    printf("[INIT] %-22s %5u ms (total %5u ms)\n", name, (unsigned)(t_ - s_initPrev), \
-           (unsigned)(t_ - s_initT0)); s_initPrev = t_; } while (0)
-#else
-#define INIT_STEP(name) do { } while (0)
-#endif
 
 extern void LoadImage_SetHdIconKey(const char* key);   // TextureLoader.cpp (port)
 
@@ -433,13 +419,8 @@ void InitializeGame(void)
     g_fading_counter = 0;
 
     Task_execute(1, (void*)display_game_loading_message);
-#if defined(__DREAMCAST__)
-    s_initT0 = s_initPrev = plat_time_ms();
-    g_dcLoadYield = 1;
-#endif
 
     LoadFile(GAME_DATA_ROOT "data\\bio_card.dat", g_loadDataDestPointer, 32);
-    INIT_STEP("bio_card.dat");
 
     if ((g_main_state_flags & MSF_CONTINUE_GAME) == 0) {
         g_gameSessionInitFlag = 0;
@@ -634,13 +615,10 @@ void InitializeGame(void)
         // Port-only: the player's skin and the weapon effect pages decode
         // behind the load instead of stalling it (HdTextures.h).
         HdDeferScope hdDefer;
-        INIT_STEP("game state setup");
         SetupCharacterData();
-        INIT_STEP("SetupCharacterData");
 
         g_loadDataDestPointer = g_shootDirEspBuffer;
         load_shoot_direction_data();
-        INIT_STEP("shoot direction data");
     }
 
     g_SndFadeType = 0;
@@ -648,24 +626,16 @@ void InitializeGame(void)
     g_BGM_STATE = 0xFF;
 
     load_room_sfx(0);
-    INIT_STEP("load_room_sfx");
     load_character_sfx(g_playerEntity.id & 1);
-    INIT_STEP("load_character_sfx");
 
     LoadSoundBank(g_playerEntity.equippedWeaponId, g_DataBuffer);
-    INIT_STEP("weapon sound bank");
 
     g_main_state_flags = g_main_state_flags & ~MSF_ROOM_TRANSITION;
 
     init_room();
-    INIT_STEP("init_room");
 
     g_AttractModeIdleTimer = 1;
     update_room_bgm();
-    INIT_STEP("update_room_bgm");
-#if defined(__DREAMCAST__)
-    g_dcLoadYield = 0;
-#endif
 
     // Port: the first-run Jill (no main-hall ribbon) is the PC's alone - see
     // jill_needs_ink_ribbons (Globals.h).
