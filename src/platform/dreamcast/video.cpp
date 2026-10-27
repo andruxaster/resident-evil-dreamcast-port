@@ -364,6 +364,13 @@ int  s_playToFrame = 0;
 bool s_active = false;
 bool s_endEvent = false;
 DWORD s_startMs = 0;
+// MOVIE_AUDIO_END_FIX: wall-clock time the soundtrack finished playing out
+// (0 = not yet). A movie whose audio is shorter than its picture used to stop
+// on its last decoded frame: the clock is the audio played, which stops with
+// the audio, so the remaining frames were never due and the movie waited for
+// the skip button. Once the file is read to the end and the audio has played
+// out, the clock runs on from there on the timer.
+DWORD s_audioDoneMs = 0;
 
 void QueueClear()
 {
@@ -679,6 +686,7 @@ void StartSegment(int fromFrame)
     FlushPending();
     s_baseFrame = fromFrame;
     s_startMs = plat_time_ms();
+    s_audioDoneMs = 0;
 }
 
 void Present()
@@ -797,7 +805,14 @@ void plat_video_tick(void)
     if (!s_active || !s_open) return;
 
     double seconds = (double)(plat_time_ms() - s_startMs) / 1000.0;
-    if (s_useAudio) seconds = (double)dc_movie_audio_played() / (double)s_aRate;
+    if (s_useAudio) {
+        seconds = (double)dc_movie_audio_played() / (double)s_aRate;
+        // MOVIE_AUDIO_END_FIX: the soundtrack is over but frames remain.
+        if (s_demuxEof && dc_movie_audio_buffered() == 0 && s_pendFrames == 0) {
+            if (s_audioDoneMs == 0) s_audioDoneMs = plat_time_ms();
+            seconds += (double)(plat_time_ms() - s_audioDoneMs) / 1000.0;
+        }
+    }
     const int target = s_baseFrame + (int)(seconds * s_fps);
 
     Pump(target);
