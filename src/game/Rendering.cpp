@@ -411,8 +411,15 @@ void QueueTexturedSprite(float gameX, float gameY, float gameW, float gameH,
 // the order the text was drawn in: HdText_Layout14 sets each run of letters at
 // the font's own spacing. Called before the depth sort reorders the queue.
 // ============================================================================
-static HdTextGlyphSprite s_hd14Layout[MAX_PENDING_SPRITES];
-static int s_hd14LayoutIndex[MAX_PENDING_SPRITES];
+#if defined(__DREAMCAST__)
+// No HD font on the Dreamcast (platform/dreamcast/hd_stubs.cpp): no glyph is
+// ever queued, so the 32 KB of layout scratch is not needed.
+#define HD14_LAYOUT_MAX 1
+#else
+#define HD14_LAYOUT_MAX MAX_PENDING_SPRITES
+#endif
+static HdTextGlyphSprite s_hd14Layout[HD14_LAYOUT_MAX];
+static int s_hd14LayoutIndex[HD14_LAYOUT_MAX];
 
 static void hd14_layout_pending(void)
 {
@@ -420,6 +427,7 @@ static void hd14_layout_pending(void)
     for (int i = 0; i < g_pendingSpriteCount; i++) {
         const PendingSprite& p = g_pendingSprites[i];
         if (!p.valid || p.hdGlyph < 0) continue;
+        if (n >= HD14_LAYOUT_MAX) break;
         HdTextGlyphSprite& g = s_hd14Layout[n];
         g.id = p.hdGlyph;
         g.joins = (n > 0 && s_hd14LayoutIndex[n - 1] == i - 1);
