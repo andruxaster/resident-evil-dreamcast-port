@@ -54,6 +54,11 @@ SHARED_SRCS := $(shell sed -n '/^set$(OPEN)RE1_SOURCES/,/^$(CLOSE)/p' CMakeLists
 ifneq ($(RE1_DC_SATURN),1)
 SHARED_SRCS := $(filter-out src/game/saturn/%,$(SHARED_SRCS))
 endif
+# The HD texture / HD font / WebP layer of upstream 1.4.0 cannot run on the
+# Dreamcast: left out, stubbed by src/platform/dreamcast/hd_stubs.cpp.
+HD_SRCS := src/system/HdTextures.cpp src/system/WebpImage.cpp \
+           src/game/HdText.cpp src/game/RoomBackgroundWebp.cpp
+SHARED_SRCS := $(filter-out $(HD_SRCS),$(SHARED_SRCS))
 
 DC_SRCS := \
     src/platform/dreamcast/platform.cpp \
@@ -67,6 +72,7 @@ DC_SRCS := \
     src/platform/dreamcast/dc_iso.cpp \
     src/platform/dreamcast/main.cpp
 
+DC_SRCS += src/platform/dreamcast/hd_stubs.cpp
 ifneq ($(RE1_DC_SATURN),1)
 DC_SRCS += src/platform/dreamcast/saturn_stubs.cpp
 endif

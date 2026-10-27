@@ -63,6 +63,10 @@ extern "C" void* volatile g_dcPageCaller;
 #define RE1_DC_SMOOTH 1
 #endif
 extern "C" volatile int g_dcSmoothNext;   // platform.cpp; set around room-mask loads
+// LEAK_AUDIT_FIX: set around a CreateTexture whose pixels will be rewritten
+// in place (video.cpp's movie frame): such a texture is never shared - an
+// identical texture elsewhere (an all-black first frame) would be overwritten.
+extern "C" { volatile int g_dcNoShareNext = 0; }
 // The game's two texture tables (Globals.cpp). The census lists which of their
 // entries still hold each texture, so a refcount with no matching owners shows
 // up as a leak and names the table entry that was dropped.
@@ -949,7 +953,7 @@ MarniHandle MarniDX::CreateTexture(int width, int height, int bpp, const void* p
     // texture per destination slot of the page (item pictures: 7 identical
     // 256x256 pages = 896 KB in one census). Strided textures (movie frames,
     // backgrounds) are updated in place, so they are never shared.
-    if (!s.strided) {
+    if (!s.strided && !g_dcNoShareNext) {
         s.hash = contentHash;
         if (s.smooth) s.hash ^= 0x9E3779B97F4A7C15ull;   // never shared with a sharp copy
         for (MarniHandle h = 1; h < MARNI_MAX_TEXTURES; ++h) {

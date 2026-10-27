@@ -137,6 +137,7 @@ BOOL Ps1FmvSubtitles_Begin(int fmvId)
                         Marni_DX()->DestroyTexture(tracks[j].texture);
                     }
                 }
+                s_tracks.clear();   // LEAK_AUDIT_FIX: their textures are gone
                 dbg_printf("[subs] cannot load data\\%s\n", tracks[i].file);
                 return FALSE;
             }
@@ -153,6 +154,9 @@ void Ps1FmvSubtitles_End(void)
 {
     s_active = FALSE;
     s_track = -1;
+    // LEAK_AUDIT_FIX: the three subtitle textures stayed in video memory for
+    // good after the prologue; they are rebuilt the next time it plays.
+    ReleaseTracks();
 }
 
 BOOL Ps1FmvSubtitles_IsActive(void)

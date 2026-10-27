@@ -428,7 +428,14 @@ int create_texture_page(void* psxTexData, int flags)
     // the source descriptor so the log names the page that went wrong.
     g_texturePageSrcDesc = psxTexData;
 
-    CMarniBits_CopyFrom(&g_MarniBitsWorkBuffer, psxTexData);
+    // LEAK_AUDIT_FIX: an invalid source (the title's never-filled legacy
+    // descriptors) leaves the work buffer holding the PREVIOUS page; uploading
+    // it anyway made a second, unowned copy of that texture (one per return to
+    // the title / character select / ending). Nothing to create then.
+    if (CMarniBits_CopyFrom(&g_MarniBitsWorkBuffer, psxTexData) == 0) {
+        g_texturePageHandle = 0;
+        return 0;
+    }
 
     // CopyFrom ALIASES the caller's pixel/palette pointers, and the async
     // worker only reads them later, on the scheduler task. The original gets
@@ -546,7 +553,10 @@ void ProcessTextureImage(void* imageBuffer, short textureBankID, short pageOffse
         if (pageTable[0] != 0) { destroy_texture_page(pageTable[0]); pageTable[0] = 0; }
         pageTable[0] = create_texture_page(&psxTex, 2);
     } else {
-        create_texture_page(&psxTex, 2);
+        // LEAK_AUDIT_FIX: no table entry to keep the handle in (slot 2, the
+        // boot font) - the page was created and dropped. Release it again.
+        const int handle = create_texture_page(&psxTex, 2);
+        if (handle != 0) destroy_texture_page(handle);
     }
 
     if (cnt810Ok) *(DWORD*)((BYTE*)&g_VideoDriverArray_810 + slotOffset) = 1;

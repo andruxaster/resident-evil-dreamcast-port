@@ -1052,11 +1052,17 @@ static void page_game(unsigned int nav)
     r = opt_row("WESTERN DIFFICULTY", "PS1 USA RULES IN OG AND DC (NOT TRAINING)");
     opt_row_value(r, g_bWesternDifficultyOption ? "ON" : "OFF", 1);
 
+#if defined(__DREAMCAST__)
+    // No HD layer on the Dreamcast (platform/dreamcast/hd_stubs.cpp): no row.
+    r = opt_row("APPLY AND RESTART", restart ? "RESTART THE GAME NOW WITH THE NEW SETTINGS"
+                                             : "MODE AND REGION ARE UNCHANGED");
+#else
     r = opt_row("HD MODE", "HD BACKGROUNDS, TEXTURES AND FONTS. NEEDS RESTART");
     opt_row_value(r, s_cfgHd ? "ON" : "OFF", 1);
 
     r = opt_row("APPLY AND RESTART", restart ? "RESTART THE GAME NOW WITH THE NEW SETTINGS"
                                              : "MODE, REGION AND HD MODE ARE UNCHANGED");
+#endif
     r->enabled = restart;
     opt_row("BACK", NULL);
 
@@ -1069,7 +1075,11 @@ static void page_game(unsigned int nav)
     if (toggle && !enabled) {
         opt_sfx(SFX_TITLE_CANCEL);
     } else if (toggle) {
-        switch (*cursor) {
+        int row = *cursor;
+#if defined(__DREAMCAST__)
+        if (row >= 7) row++;               // the rows after the missing HD MODE
+#endif
+        switch (row) {
         case 0: {
             // Step to the next mode whose folder is installed.
             const int d = (step != 0) ? step : 1;

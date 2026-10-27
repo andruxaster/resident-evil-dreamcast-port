@@ -186,7 +186,6 @@ void FUN_004850d0(void)
     if (slot < 0) {
         return;
     }
-    g_trailSlotUsed[slot] = 1;
 
     unsigned int* animObj = (unsigned int*)s_trailCreateObj;
     if (animObj == NULL) {
@@ -196,6 +195,9 @@ void FUN_004850d0(void)
     if (slotData == NULL) {
         return;
     }
+    // LEAK_AUDIT_FIX: claimed only now - the early returns above left the
+    // slot marked used with nothing to ever release it (16 slots in all).
+    g_trailSlotUsed[slot] = 1;
 
     int vertBase = slotData[0];                 // AnimSlot[0] = data0 (frame verts)
     unsigned int* prims = (unsigned int*)slotData[4];  // AnimSlot[4] = data2 (TMD prims)

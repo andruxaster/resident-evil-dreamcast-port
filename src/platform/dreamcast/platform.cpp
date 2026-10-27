@@ -239,7 +239,13 @@ const char* plat_normalize_path(const char* path, char* buffer, size_t size)
 {
     if (path == NULL || buffer == NULL || size == 0) return path;
 
+    // LEAK_AUDIT_FIX: the cache kept every distinct path ever asked for - one
+    // to five per file the game opens (overlay, .ogg and base probes), so it
+    // only grew through a playthrough (~0.3-1.5 MB in small heap blocks).
+    // /cd lookups are cheap on their own (ResolveCd answers from the cached
+    // directory listings), so the cache is bounded and simply restarts.
     static std::unordered_map<std::string, std::string> s_cache;
+    if (s_cache.size() >= 256) s_cache.clear();
     auto it = s_cache.find(path);
     if (it == s_cache.end()) {
         std::string p = Slashes(path);
@@ -327,6 +333,8 @@ extern "C" size_t dc_fread_whole(FILE* fp, void* dst, size_t size)
 extern "C" long dc_iso_size(const char* path);
 extern "C" long dc_iso_load(const char* path, void* dst);
 
+extern "C" void dc_load_yield(void);   // LOAD_YIELD, below
+
 void* plat_file_read_all(const char* path, size_t* outSize)
 {
     // /cd files come from the direct ISO reader (dc_iso.cpp): no iso9660
@@ -340,6 +348,7 @@ void* plat_file_read_all(const char* path, size_t* outSize)
             if (buf == NULL) return NULL;
             if (dc_iso_load(cp, buf) == sz) {
                 if (outSize != NULL) *outSize = (size_t)sz;
+                dc_load_yield();   // LOAD_YIELD
                 return buf;
             }
             free(buf);
@@ -371,6 +380,7 @@ void* plat_file_read_all(const char* path, size_t* outSize)
     if (got != (size_t)fileSize) { free(buffer); return NULL; }
 
     if (outSize != NULL) *outSize = (size_t)fileSize;
+    dc_load_yield();   // LOAD_YIELD
     return buffer;
 }
 
@@ -462,6 +472,48 @@ void* plat_alloc_guarded_stacks(int count, size_t stackSize, size_t guardSize)
     printf("[DC] task stacks: %d x %u KB at %p\n", count,
            (unsigned)(stackSize / 1024), (void*)mem);
     return mem + guardSize;
+}
+
+// ---------------------------------------------------------------------------
+// LOAD_YIELD (test branch): let the game draw frames during long loads.
+//
+// The game's loaders run on a task and do not yield while they read, so a
+// load that takes seconds on a GD-ROM freezes the screen - the opening "They
+// have escaped..." text stops at its first letter. While g_dcLoadYield is set
+// (GameStart.cpp: InitializeGame, which nothing else runs alongside but the
+// text task), every file load ends with dc_load_yield(): at most every ~30 ms
+// it sleeps the loading task for one frame, so the frame is drawn and the text
+// task types on. Only on a task's own stack: an ExecAsync callback runs on the
+// scheduler's stack and must never sleep.
+// ---------------------------------------------------------------------------
+extern "C" { volatile int g_dcLoadYield = 0; }
+extern DWORD g_SchedulerRunningFlag;    // TaskScheduler.cpp
+void Task_sleep(int frames);
+
+extern "C" void dc_load_yield(void)
+{
+    if (!g_dcLoadYield || s_stackMem == nullptr || g_SchedulerRunningFlag == 0) return;
+    const uintptr_t sp = (uintptr_t)__builtin_frame_address(0);
+    const uintptr_t lo = (uintptr_t)s_stackMem;
+    const uintptr_t hi = lo + (size_t)s_stackCount * (s_stackSize + s_guardSize) + s_guardSize;
+    if (sp < lo || sp >= hi) return;                 // not on a task stack
+    static uint64_t s_lastYield = 0;
+    const uint64_t now = timer_ms_gettime64();
+    if (now - s_lastYield < 30) return;
+    Task_sleep(1);
+    s_lastYield = timer_ms_gettime64();
+}
+
+// "[ROOM] RDT load        +312 ms (total 1450 ms)": a "start" step restarts
+// the total. Test-branch timing of the room load (RoomInit.cpp, ROOM_STEP).
+extern "C" void dc_step_mark(const char* tag, const char* name)
+{
+    static uint64_t s_t0 = 0, s_prev = 0;
+    const uint64_t now = timer_ms_gettime64();
+    if (strcmp(name, "start") == 0 || s_t0 == 0) s_t0 = s_prev = now;
+    printf("[%s] %-18s +%5u ms (total %5u ms)\n", tag, name,
+           (unsigned)(now - s_prev), (unsigned)(now - s_t0));
+    s_prev = now;
 }
 
 // ---------------------------------------------------------------------------
