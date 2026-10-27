@@ -282,6 +282,14 @@ void init_room(void)
     room_set();
 }
 
+// LOAD_YIELD test branch: time of each room_set step in the log ([ROOM]).
+#if defined(__DREAMCAST__)
+extern "C" void dc_step_mark(const char* tag, const char* name);   // platform.cpp
+#define ROOM_STEP(name) dc_step_mark("ROOM", name)
+#else
+#define ROOM_STEP(name) do { } while (0)
+#endif
+
 // ============================================================================
 // room_action_table_reset (0x00477f80)
 // Makes all 24 room action slots inert and rewinds the tail. It zeroes ONLY
@@ -357,7 +365,7 @@ void room_set(void)
     // 0x00477720: g_AttractModeIdleTimer = 1
     g_AttractModeIdleTimer = 1;
 
-    printf("room_set start\n");
+    printf("room_set start\n"); ROOM_STEP("start");
 
     // Delete secondary texture sets 0x17-0x1d
     delete_texture_set_secondary(0x1d);
@@ -525,7 +533,7 @@ void room_set(void)
     }
 
     // 0x0047799c:
-    printf("player set end\n");
+    printf("player set end\n"); ROOM_STEP("player set");
 
     // 0x004779b4: object_delete_00442170(2)
     object_delete_00442170(2);
@@ -560,7 +568,7 @@ void room_set(void)
         Flg_on((int)&g_EnemiesFlags, 0x54);
     }
 
-    printf("after of Room load\n");
+    printf("after of Room load\n"); ROOM_STEP("RDT load");
 
     // 0x00477a37: Setup collision boundaries and 3D sound callbacks
     Room_SetupCollisionCallbacks();
@@ -574,12 +582,12 @@ void room_set(void)
     // 0x00477a66: object_delete_00442170(5)
     object_delete_00442170(5);
 
-    printf("after of Sound rom set\n");
+    printf("after of Sound rom set\n"); ROOM_STEP("enemy sound banks");
 
     // 0x00477a92: InitRoomEffSprite()
     InitRoomEffSprite();
 
-    printf("after of Init eff sprite\n");
+    printf("after of Init eff sprite\n"); ROOM_STEP("effect sprites");
 
     // 0x00477ac5: Sound bank loading loop
     i = 0;
@@ -617,7 +625,7 @@ void room_set(void)
 
     object_delete_00442170(7);
 
-    printf("after of model\n");
+    printf("after of model\n"); ROOM_STEP("models");
 
     // Port-only: hand this room's model textures and effect pages to the HD
     // decode workers before the init script uploads them (RoomBackgroundWebp.h).
@@ -629,7 +637,7 @@ void room_set(void)
     // 0x00477c21: g_message_flags |= 0x80
     g_message_flags |= 0x80;
 
-    printf("after of Scenario check\n");
+    printf("after of Scenario check\n"); ROOM_STEP("init SCD");
 
     // 0x00477c45: room_events_check()
     room_events_check();
@@ -639,7 +647,7 @@ void room_set(void)
 
     object_delete_00442170(8);
 
-    printf("after of Event\n");
+    printf("after of Event\n"); ROOM_STEP("events");
 
     object_delete_00442170(9);
 
@@ -700,7 +708,7 @@ void room_set(void)
 
     object_delete_00442170(10);
 
-    printf("after of model set\n");
+    printf("after of model set\n"); ROOM_STEP("texture banks");
 
     // 0x00477e7c: Special case for lab visual data room (slide projector)
     if ((g_stageId == STAGE_LABORATORY) && (g_roomId == ROOM_VISUAL_DATA_ROOM)) {
@@ -710,7 +718,7 @@ void room_set(void)
     // 0x00477e9f: load_room_bg()
     load_room_bg();
 
-    printf("after of Bg room set\n");
+    printf("after of Bg room set\n"); ROOM_STEP("backgrounds");
 
     object_delete_00442170(0xb);
 
@@ -740,7 +748,7 @@ void room_set(void)
 
     g_AttractModeIdleTimer = 0;
 
-    printf("room_set end\n");
+    printf("room_set end\n"); ROOM_STEP("end");
 }
 
 // ============================================================================
