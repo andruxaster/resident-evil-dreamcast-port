@@ -20,6 +20,8 @@
 // text types on, and each step's time goes to the log as [INIT].
 #if defined(__DREAMCAST__)
 extern "C" volatile int g_dcLoadYield;
+extern "C" volatile int g_dcLoadYields;
+static int s_initFrames0 = 0;
 static DWORD s_initT0 = 0, s_initPrev = 0;
 #define INIT_STEP(name) do { const DWORD t_ = plat_time_ms(); \
     printf("[INIT] %-22s %5u ms (total %5u ms)\n", name, (unsigned)(t_ - s_initPrev), \
@@ -436,6 +438,8 @@ void InitializeGame(void)
 #if defined(__DREAMCAST__)
     s_initT0 = s_initPrev = plat_time_ms();
     g_dcLoadYield = 1;
+    g_dcLoadYields = 0;
+    s_initFrames0 = g_numFramesPresented;
 #endif
 
     LoadFile(GAME_DATA_ROOT "data\\bio_card.dat", g_loadDataDestPointer, 32);
@@ -664,6 +668,25 @@ void InitializeGame(void)
     update_room_bgm();
     INIT_STEP("update_room_bgm");
 #if defined(__DREAMCAST__)
+    // Diagnostics: did the load yield, were frames drawn, how far the text got.
+    printf("[INIT] load yielded %d times, %d frames presented; message active=%d state=%d at char %d, fade=%d\n",
+           (int)g_dcLoadYields, g_numFramesPresented - s_initFrames0,
+           (g_menu_choice_id & 0x80) ? 1 : 0, (int)g_MessageStateCounter,
+           (g_MessageCurrentPtr && g_MessagePtr) ? (int)(g_MessageCurrentPtr - g_MessagePtr) : -1,
+           (g_main_state_flags & MSF_FADE_ACTIVE) ? 1 : 0);
+    // LOAD_TEXT_WAIT: the loading text ("They have escaped into the mansion...")
+    // is the PS1's load screen - its CD load outlasted the text. Here the load
+    // can finish first, and the text was cut off at its first letters when the
+    // game started. Let it play out: its last page ends with an auto-dismiss
+    // (\d), which clears the message flag. Capped, so a stuck message cannot
+    // hold the game.
+    {
+        const DWORD waitT0 = plat_time_ms();
+        while ((g_menu_choice_id & 0x80) != 0 && plat_time_ms() - waitT0 < 20000) {
+            Task_sleep(1);
+        }
+        INIT_STEP("loading text");
+    }
     g_dcLoadYield = 0;
 #endif
 

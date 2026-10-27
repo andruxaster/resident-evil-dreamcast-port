@@ -486,21 +486,30 @@ void* plat_alloc_guarded_stacks(int count, size_t stackSize, size_t guardSize)
 // task types on. Only on a task's own stack: an ExecAsync callback runs on the
 // scheduler's stack and must never sleep.
 // ---------------------------------------------------------------------------
-extern "C" { volatile int g_dcLoadYield = 0; }
+extern "C" { volatile int g_dcLoadYield = 0; volatile int g_dcLoadYields = 0; }
 extern DWORD g_SchedulerRunningFlag;    // TaskScheduler.cpp
 void Task_sleep(int frames);
 
 extern "C" void dc_load_yield(void)
 {
-    if (!g_dcLoadYield || s_stackMem == nullptr || g_SchedulerRunningFlag == 0) return;
+    if (!g_dcLoadYield) return;
+    if (s_stackMem == nullptr || g_SchedulerRunningFlag == 0) {
+        printf("[YIELD] skipped: %s\n", s_stackMem == nullptr ? "no task stacks" : "scheduler not running");
+        return;
+    }
     const uintptr_t sp = (uintptr_t)__builtin_frame_address(0);
     const uintptr_t lo = (uintptr_t)s_stackMem;
     const uintptr_t hi = lo + (size_t)s_stackCount * (s_stackSize + s_guardSize) + s_guardSize;
-    if (sp < lo || sp >= hi) return;                 // not on a task stack
+    if (sp < lo || sp >= hi) {                       // not on a task stack
+        printf("[YIELD] skipped: sp %08x outside task stacks %08x-%08x\n",
+               (unsigned)sp, (unsigned)lo, (unsigned)hi);
+        return;
+    }
     static uint64_t s_lastYield = 0;
     const uint64_t now = timer_ms_gettime64();
     if (now - s_lastYield < 30) return;
     Task_sleep(1);
+    g_dcLoadYields = g_dcLoadYields + 1;
     s_lastYield = timer_ms_gettime64();
 }
 
