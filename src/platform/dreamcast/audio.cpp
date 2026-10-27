@@ -489,9 +489,23 @@ void ProfSample()
     }
 }
 
+// AUDIO_GAP_DIAG: the stream is refilled half a buffer (93 ms) at a time; a
+// refill that comes later than that lets the AICA play stale samples - a
+// click, heard first on the right channel (KOS times the refill from the left
+// channel's position). Logs every poll gap over 60 ms and the time the
+// refill itself took, so a click on the console can be matched to the log.
+static uint64_t s_pollLast = 0;
+
 void* PollThread(void*)
 {
     while (s_run) {
+        {
+            const uint64_t now = timer_us_gettime64();
+            if (s_pollLast != 0 && now - s_pollLast > 60000) {
+                printf("[AUDIO] poll gap %u ms\n", (unsigned)((now - s_pollLast) / 1000));
+            }
+            s_pollLast = now;
+        }
         // PROF_SAMPLING_FIX: sample first, at the timer wake-up. Sampling after
         // snd_stream_poll() caught the game thread exactly where it released
         // the mixer lock, not where it spends its time.
@@ -499,7 +513,10 @@ void* PollThread(void*)
         if (s_stream != SND_STREAM_INVALID) {
             DC_TRACE('S');
             const uint64_t t0 = RE1_DC_PROF ? timer_us_gettime64() : 0;
+            const uint64_t tp0 = timer_us_gettime64();
             snd_stream_poll(s_stream);
+            const uint64_t tp1 = timer_us_gettime64();
+            if (tp1 - tp0 > 20000) printf("[AUDIO] refill took %u ms\n", (unsigned)((tp1 - tp0) / 1000));
             if (RE1_DC_PROF) s_profAudioUs += (uint32_t)(timer_us_gettime64() - t0);
             DC_TRACE('s');
         }
