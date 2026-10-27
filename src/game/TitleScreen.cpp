@@ -278,7 +278,11 @@ static int title_main_items(unsigned char* out)
     out[n++] = 1;                                   // NEW GAME
     out[n++] = 2;                                   // LOAD GAME
     if (saturn_battle_offered()) out[n++] = (unsigned char)title_extra_item();
+#if !defined(__DREAMCAST__)
+    // No OPTIONS menu on the Dreamcast (GameOptions.cpp is not built there):
+    // its pages are about windows, resolutions, keyboards and restarting.
     out[n++] = TITLE_OPTIONS_ITEM;
+#endif
     return n;
 }
 
@@ -1114,10 +1118,12 @@ void title_state(void)
     }
 
     // OPTIONS: a state of its own, which chains back here when it is left.
+#if !defined(__DREAMCAST__)
     if (g_titleSelectionId == TITLE_OPTIONS_ITEM) {
         Task_chain((void*)game_options_state);
         return;
     }
+#endif
 
     // DC: the difficulty submenu leaves the choice at 3..5 (and 6 for ADVANCED*
     // while the green cell is drawn). The PS1's title_state groups 1 and 3..6
