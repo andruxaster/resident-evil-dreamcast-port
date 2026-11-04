@@ -47,6 +47,8 @@ extern unsigned char Effect_CreateBillboard(unsigned char type, unsigned char de
                                             short yaw, void* spriteInfo, void* pos,
                                             char lightFactor);       // PlayerAnimations.cpp
 extern const unsigned char g_RoomEffectSpriteTable[7 * 32 * 4]; // EffectSprites.cpp 0x004c48b8
+extern const int kWeaponSheetShiftedSrv;          // EffectSprites.cpp, port-only
+extern const unsigned char kEffectTexVHackShift;  // EffectSprites.cpp, 0x7b
 extern unsigned int g_entity_bkp;          // EntityCommon.cpp 0x00be0df4
 extern int  ProjectEffectSprite(SVECTOR* world, int* outxy);   // GteMatrix.cpp 0x0040aa50
 extern int  is_entity_in_switch_zone(VECTOR* position, void* zoneData); // Room.cpp 0x00462d90
@@ -2608,12 +2610,35 @@ static void effect_submit_sprite(Effect* eff, short screenX, short screenY,
 
     int tint = (int)g_TextureDesc.clutY;
 
+    // ---- room 70C (the second Yawn fight): tint 1/2 sprites in page rows
+    // (0x1a, 99) sample the art 0x7b rows lower, at tint 0 ----
+    //
+    // In that room the band is the ember sheet (type 0x0e, page 1 rows 27..99)
+    // and 0x7b rows below it the page carries the same frames as beige dust:
+    // the Yawn's floor-break puffs (tint 2) draw as dust, not fire.
+    //
+    // The test is on the PAGE-ABSOLUTE V. Weapon sheets keep sprite-local UVs
+    // in the port (bandV adds the page offset back), and their SRV is only the
+    // sheet's own rows, so the shift cannot be done on texV: the sheet is
+    // served from its shifted bake (SRV kWeaponSheetShiftedSrv + slot, made by
+    // RebakeWeaponSheetsForRoom in this room) instead. Room sheets are whole
+    // pages with absolute UVs and shift as in the original.
+    //
+    // clutTint follows the reset: the port's per-tint CLUT row and PS1 blend
+    // row (below) must serve tint 0's art, as the original does.
+    int clutTint = tint;
+    bool texVShifted = false;
     if (texVHack && (g_stageId == STAGE_MANSION_RETURN_2F) && (g_roomId == ROOM_LESSON_ROOM)
         && ((tint == 2) || (tint == 1))
-        && (0x1a < g_TextureDesc.texV)
-        && ((unsigned short)(g_TextureDesc.texV + g_TextureDesc.height) < 99)) {
-        g_TextureDesc.texV = (unsigned char)(g_TextureDesc.texV + 0x7b);
+        && (0x1a < bandV)
+        && ((unsigned short)(bandV + g_TextureDesc.height) < 99)) {
+        if (g_effectSpriteSheetSlot[eff->effectType] < 8) {
+            texVShifted = true;
+        } else {
+            g_TextureDesc.texV = (unsigned char)(g_TextureDesc.texV + kEffectTexVHackShift);
+        }
         tint = 0;
+        clutTint = 0;
     }
 
     if (colorIdx >= 60) return;   // port-only guard
@@ -2732,10 +2757,16 @@ static void effect_submit_sprite(Effect* eff, short screenX, short screenY,
     // (row-1); row 0 stays on the plain page SRVs 11-14. Single-row room
     // sheets (g_effectSpriteClutRows[type] <= 1) are untouched and keep
     // rendering their base palette from the page SRV.
+    if (texVShifted) {
+        // the room 70C shifted band (see above); without it the plain sheet
+        // stays, as before
+        int shifted = kWeaponSheetShiftedSrv + (int)sheetSlot;
+        if (g_TexturePageSRV[shifted] != MARNI_NULL_HANDLE) texSlot = shifted;
+    }
     if (sheetSlot >= 8) {
         int rows = (int)g_effectSpriteClutRows[eff->effectType];
         if (rows > 1) {
-            int clutRow = (int)g_TextureDesc.clutY;
+            int clutRow = clutTint;
             if (clutRow > rows - 1) clutRow = rows - 1;
             if (clutRow > 3) clutRow = 3;
             if (clutRow > 0) {
@@ -2765,7 +2796,7 @@ static void effect_submit_sprite(Effect* eff, short screenX, short screenY,
     int ps1Blend = EFFECT_BLEND_OPAQUE;
     {
         unsigned int attr = AH_USHORT(eff, 10);
-        unsigned int row = (unsigned int)(unsigned short)g_TextureDesc.clutY;
+        unsigned int row = (unsigned int)clutTint;
         if (row > 3) row = 3;
         if ((attr & 0x4000) != 0 && eff->effectType < 50
             && ((g_effectSpriteStpRows[eff->effectType] >> row) & 1) != 0) {
@@ -2793,9 +2824,9 @@ static void effect_submit_sprite(Effect* eff, short screenX, short screenY,
 // projected, and the velocity header advanced. The sprite animation is stepped
 // and the sprite submitted.
 //
-// Effects whose header lacks bit 1 keep whatever position the stack had in the
-// original; the port zeroes that scratch so the zone test deterministically
-// rejects them instead of randomly drawing at a stale spot.
+// Frames whose header lacks bit 1 keep whatever world AND screen position the
+// stack had in the original; the port stands in the slot's last stored world
+// position for both (see local_10 and the re-projection before the submit).
 // ============================================================================
 void EffectActor_UpdateAndRender(void)
 {
@@ -2892,6 +2923,28 @@ void EffectActor_UpdateAndRender(void)
     if ((eff->animHeader[11] & 0x80) != 0) return;
 
     if (is_entity_in_switch_zone(&local_10, g_CurrentRdtDataTypePtr) == 0) return;
+
+    // The screen position is stale stack in the original too (0x0047c2f0:
+    // [esp+0x14] is only written by the transform branch), and its residue is
+    // the projection of the same last position local_10 is seeded with. Left at
+    // {0,0} it is the SCREEN CENTRE (callers pass centred coordinates), so every
+    // frame whose phase had the transform bit clear drew the sprite there - in
+    // ROOM1000 camera 0 the sword key's sparkle blinked as a white dot on the
+    // hall door until the key was picked up. Re-project the same position the
+    // zone test just accepted, through the same camera setup as the transform
+    // branch; projDepth/depthScaled keep the values that branch stored.
+    if ((eff->animHeader[10] & 2) == 0) {
+        SVECTOR lastPos;
+        lastPos.x = (short)local_10.x;
+        lastPos.y = (short)local_10.y;
+        lastPos.z = (short)local_10.z;
+        lastPos.pad = 0;
+        GetMatrixTranslation(&g_RoomCameraData);
+        SetGlobalScaledRotationMatrix(&g_RoomCameraData);
+        ProjectEffectSprite(&lastPos, (int*)&local_1c);
+        local_1c.x -= 0xa0;
+        local_1c.y -= 0x78;
+    }
 
     effect_submit_sprite(eff, local_1c.x, local_1c.y,
                          (int)(unsigned short)eff->depthScaled + 1,
