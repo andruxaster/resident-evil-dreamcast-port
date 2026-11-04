@@ -110,4 +110,15 @@ void room_hd_note_room(const char*) {}
 const char* room_hd_rdt_mask_key(int, char* out, size_t outSize) { return EmptyKey(out, outSize); }
 const char* room_hd_model_key(const void*, char* out, size_t outSize) { return EmptyKey(out, outSize); }
 void room_hd_prefetch(void) {}
+const char* room_hd_pc_mask_page(int, const void*, int* pageW, int* pageH)
+{
+    if (pageW) *pageW = 0;
+    if (pageH) *pageH = 0;
+    return NULL;                       // no HD picture to borrow a part of
+}
+void room_hd_tim_size(const void*, int* width, int* height)
+{
+    if (width) *width = 0;
+    if (height) *height = 0;
+}
 void room_hd_prefetch_early(void) {}
