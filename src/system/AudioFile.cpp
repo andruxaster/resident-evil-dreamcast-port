@@ -26,6 +26,7 @@ const unsigned int kChunkData = 0x61746164;  // 'data'
 const unsigned int kChunkSmpl = 0x6C706D73;  // 'smpl'
 const unsigned int kChunkMark = 0x70316572;  // 're1p'
 const unsigned int kChunkFact = 0x74636166;  // 'fact'
+const unsigned int kChunkJump = 0x6A316572;  // 're1j'
 
 unsigned int rd32(const unsigned char* p)
 {
@@ -59,6 +60,7 @@ int LoadWav(unsigned char* data, size_t size, AudioFileData* out)
     int channels = 1, rate = 22050, bits = 8;
     int tag = 1, blockAlign = 0, spb = 0;
     unsigned int factFrames = 0;
+    unsigned int jumpFrom = 0, jumpTo = 0;
     unsigned char* pcm = NULL;
     unsigned int pcmSize = 0;
     unsigned int loopStart = 0, loopLast = 0;
@@ -76,6 +78,9 @@ int LoadWav(unsigned char* data, size_t size, AudioFileData* out)
             if (len >= 20 && offs + 8 + 20 <= size) spb = body[18] | (body[19] << 8);
         } else if (id == kChunkFact && len >= 4 && offs + 8 + 4 <= size) {
             factFrames = rd32(body);
+        } else if (id == kChunkJump && len >= 8 && offs + 8 + 8 <= size) {
+            jumpFrom = rd32(body);
+            jumpTo = rd32(body + 4);
         } else if (id == kChunkData) {
             pcm = (unsigned char*)body;
             pcmSize = len;
@@ -119,6 +124,10 @@ int LoadWav(unsigned char* data, size_t size, AudioFileData* out)
             out->loopBegin = loopStart;
             out->loopEnd = loopLast + 1;
         }
+        if (marked && jumpFrom != 0 && jumpFrom < jumpTo && jumpTo < frames) {
+            out->jumpFrom = jumpFrom;
+            out->jumpTo = jumpTo;
+        }
         return 1;
     }
 #endif
@@ -136,6 +145,10 @@ int LoadWav(unsigned char* data, size_t size, AudioFileData* out)
     if (marked && hasLoop && loopStart < loopLast && loopLast < frames) {
         out->loopBegin = loopStart;
         out->loopEnd = loopLast + 1;
+    }
+    if (marked && jumpFrom != 0 && jumpFrom < jumpTo && jumpTo < frames) {
+        out->jumpFrom = jumpFrom;
+        out->jumpTo = jumpTo;
     }
     return 1;
 }
