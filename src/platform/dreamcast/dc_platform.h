@@ -49,5 +49,10 @@ void        dc_save_init(void);
 const char* dc_save_root(void);
 extern "C" void dc_save_commit(const char* path, const void* data, int len);
 
+// The VMU screen: condition, EKG and ammo (vmu_lcd.cpp). g_dcVmuBusy is
+// raised by dc_save_commit while a save is written, and the screen waits.
+void dc_vmu_lcd_start(void);
+extern volatile int g_dcVmuBusy;
+
 // /cd file system on the port's ISO reader (dc_iso.cpp). 0 = mounted.
 extern "C" int dc_iso_mount(void);

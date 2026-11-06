@@ -73,6 +73,7 @@ DC_SRCS := \
     src/platform/dreamcast/crash.cpp \
     src/platform/dreamcast/stubs.cpp \
     src/platform/dreamcast/vmu_save.cpp \
+    src/platform/dreamcast/vmu_lcd.cpp \
     src/platform/dreamcast/dc_iso.cpp \
     src/platform/dreamcast/main.cpp
 
