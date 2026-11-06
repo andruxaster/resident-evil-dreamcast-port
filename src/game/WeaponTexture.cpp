@@ -20,7 +20,26 @@ const int kPage       = 256;    // the file: 256 x 256, page left, mask right
 
 // The TIM uploaded into the slot: header, two CLUT rows, 256 x height pixels.
 const size_t kTimHead = 8 + (12 + 1024) + 12;
+#if defined(__DREAMCAST__)
+// Dreamcast: the 263 KB static buffer would sit in the 16 MB of RAM even when
+// no gun texture exists. Allocate it the first time one is applied, at the
+// player texture's height, and keep it (an ExecAsync upload may still read it).
+unsigned char* s_tim = NULL;
+size_t s_timSize = 0;
+bool TimReserve(int height)
+{
+    const size_t need = kTimHead + 256 * (size_t)height;
+    if (need <= s_timSize) return true;
+    unsigned char* p = (unsigned char*)realloc(s_tim, need);
+    if (p == NULL) return false;
+    s_tim = p;
+    s_timSize = need;
+    return true;
+}
+#else
 unsigned char s_tim[kTimHead + 256 * kMaxHeight];
+bool TimReserve(int) { return true; }
+#endif
 
 bool s_loaded = false;          // slot 1 of bank 0x16 is matched (count 2)
 char s_hdKey[128] = "";
@@ -190,6 +209,10 @@ void WeaponTexture_Apply(const char* emwPath, int charBlock, unsigned int* tmd)
     // gun's page from the file (CLUT row B). Two rows at slotPage, slotPage+1;
     // the image at bank 0x16's VRAM position (what TmdProcessingCallback
     // writes into a model's TIM before storing it).
+    if (!TimReserve(h)) {
+        free(file);
+        return;
+    }
     unsigned char* t = s_tim;
     Wr32(t + 0, 0x10);
     Wr32(t + 4, 9);
