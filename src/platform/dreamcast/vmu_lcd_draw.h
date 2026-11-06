@@ -13,7 +13,8 @@
 //   rows 25..31  the equipped weapon and its ammo (the status screen's count:
 //                infinite weapons get the infinity sign)
 //
-// Outside a game (title, movies, attract demo) the screen reads RESIDENT EVIL.
+// Outside a game (title, movies, attract demo) the screen reads RESIDENT EVIL,
+// light letters on a black screen.
 // The lettering is typewriter style: monospaced, with slab serifs.
 #pragma once
 #include <stdint.h>
@@ -132,6 +133,7 @@ public:
             Reset();
             Text57("RESIDENT", 7);
             Text57("EVIL", 17);
+            for (size_t i = 0; i < sizeof(m_bits); ++i) m_bits[i] = (uint8_t)~m_bits[i];   // light type on black
             return Bytes();
         }
         Sweep(st, nowMs);
