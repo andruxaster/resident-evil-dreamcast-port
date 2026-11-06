@@ -35,6 +35,10 @@ typedef struct AudioFileData {
     int            blockAlign;      // IMA: bytes per block (all channels)
     int            samplesPerBlock; // IMA: frames per block
     unsigned int   frames;          // IMA: total frames ('fact' or computed)
+    // 're1j' (tools/dreamcast/compress_audio.py, BGM_LOOP_HEAD): the first
+    // time playback reaches frame jumpFrom it continues at jumpTo. 0/0 = none.
+    unsigned int   jumpFrom;
+    unsigned int   jumpTo;
 } AudioFileData;
 
 // Which file `path` (already run through ResolveAssetRoot) names on disk: for a

@@ -15,6 +15,7 @@
 #include "saturn/SaturnModels.h"
 #include "saturn/SaturnBattle.h"
 #include "Bonus.h"
+#include "WeaponTexture.h"
 
 // ============================================================================
 // Extern data declarations (not yet extracted to Globals.h)
@@ -523,7 +524,7 @@ void InitScaMatrix(int param1, ScaMatrixData* scaData)
 // ============================================================================
 // Port-only (HD skins, HdTextures_SetBaseFallback): a model read from a mode's
 // tree may borrow the base release's HD skin of the same file name only when
-// both files carry the same TIM. The DC and Saturn overlays reuse PC names for
+// both files' TIMs show the same picture (EmdTimsLookAlike). The DC and Saturn overlays reuse PC names for
 // models of their own (the DC's EM1032/EM1033 are its outfits, the PC's the PC
 // outfits; the Saturn's EM1016 is the Tick), and the base skin laid over their
 // UVs is a patchwork. `file`/`size` is the EMD as loaded, `relPath` its path
@@ -536,6 +537,62 @@ static const unsigned char* EmdTim(const unsigned char* file, unsigned int size,
     if (tim >= end - 0x14) return NULL;
     *timSize = end - 0x14 - tim;
     return file + tim;
+}
+
+// Whether two EMD TIMs show the same picture. Byte equality is too strict: the
+// DC re-saved the PC's own skins (CHAR10/CHAR11, EM1030/EM1031) with the gaps
+// between UV islands repainted and CHAR11's palette reordered - 1.8-2.5% of the
+// texels look different, none of them drawn - while its outfits EM1032/EM1033
+// differ in 57-70%. So the texels are compared by colour (8 bpp, the palette
+// row for each 128-texel column half as the EMD lays them out, 2 steps a
+// channel), and up to 10% may differ. Other layouts fall back to bytes.
+static bool EmdTimsLookAlike(const unsigned char* a, unsigned int aSize,
+                             const unsigned char* b, unsigned int bSize)
+{
+    if (aSize == bSize && memcmp(a, b, aSize) == 0) return true;
+    struct Tim8 {
+        const unsigned short* clut; int clutW, clutH;
+        const unsigned char* px; int w, h;
+    };
+    struct Parse {
+        static bool Run(const unsigned char* t, unsigned int size, Tim8* o)
+        {
+            if (size < 8 + 12 || (*(const unsigned int*)(t + 4) & 0xF) != (8 | 1)) return false;
+            const unsigned int clutLen = *(const unsigned int*)(t + 8);
+            if (clutLen < 12 || 8 + clutLen + 12 > size) return false;
+            o->clutW = *(const unsigned short*)(t + 8 + 8);
+            o->clutH = *(const unsigned short*)(t + 8 + 10);
+            o->clut = (const unsigned short*)(t + 8 + 12);
+            if (o->clutW < 256 || o->clutH < 1 || 12u + (unsigned)o->clutW * o->clutH * 2 > clutLen) return false;
+            const unsigned char* img = t + 8 + clutLen;
+            const unsigned int imgLen = *(const unsigned int*)img;
+            o->w = *(const unsigned short*)(img + 8) * 2;
+            o->h = *(const unsigned short*)(img + 10);
+            o->px = img + 12;
+            return o->w > 0 && o->h > 0 && 8 + clutLen + 12 + (unsigned)o->w * o->h <= size &&
+                   12u + (unsigned)o->w * o->h <= imgLen;
+        }
+    };
+    Tim8 ta, tb;
+    if (!Parse::Run(a, aSize, &ta) || !Parse::Run(b, bSize, &tb) || ta.w != tb.w || ta.h != tb.h)
+        return false;
+    int differ = 0;
+    const int total = ta.w * ta.h;
+    for (int y = 0; y < ta.h; y++) {
+        for (int x = 0; x < ta.w; x++) {
+            const int i = y * ta.w + x;
+            const int rowA = (x / 128 < ta.clutH) ? x / 128 : ta.clutH - 1;
+            const int rowB = (x / 128 < tb.clutH) ? x / 128 : tb.clutH - 1;
+            const unsigned short ca = ta.clut[rowA * ta.clutW + ta.px[i]];
+            const unsigned short cb = tb.clut[rowB * tb.clutW + tb.px[i]];
+            if (ca == cb) continue;
+            for (int sh = 0; sh < 15; sh += 5) {
+                const int d = (int)((ca >> sh) & 31) - (int)((cb >> sh) & 31);
+                if (d > 2 || d < -2) { differ++; break; }
+            }
+        }
+    }
+    return differ * 10 <= total;
 }
 
 static void HdCheckModelBaseSkin(const char* key, const char* relPath,
@@ -564,7 +621,7 @@ static void HdCheckModelBaseSkin(const char* key, const char* relPath,
         if (base != NULL) {
             unsigned int baseTimSize = 0;
             const unsigned char* baseTim = EmdTim(base, (unsigned int)baseSize, &baseTimSize);
-            same = baseTim != NULL && baseTimSize == timSize && memcmp(baseTim, tim, timSize) == 0;
+            same = baseTim != NULL && EmdTimsLookAlike(baseTim, baseTimSize, tim, timSize);
             free(base);
         }
     }
@@ -906,6 +963,8 @@ void LoadEquippedWeaponAnimation(unsigned char weapon_id, unsigned char param_2,
             weaponModel != 0 ? weaponModel
                              : g_weaponPathTable[g_playerEntity.id & 3][weapon_id]);
     SetSpriteBufferFlag();
+    char weaponPath[sizeof(FILE_PATH)];
+    strcpy(weaponPath, FILE_PATH);   // port: for WeaponTexture_Apply below
 
     unsigned int fileSize = LoadFile(FILE_PATH, (void*)anim_buffer, 32);
     g_playerEntity.jointMoveData0 = anim_buffer;
@@ -920,6 +979,7 @@ void LoadEquippedWeaponAnimation(unsigned char weapon_id, unsigned char param_2,
     if (weapon_id == 0) {
         joint->anim_slot_ptr = g_playerEntity.weaponPartAnimSlot;
         joint->anim_object = (void*)g_playerEntity.weaponPartAnimObject;
+        WeaponTexture_Apply(NULL, 0, NULL);   // port: no weapon model, no gun texture
     } else {
         joint->anim_slot_ptr = (puVar1[1] & 0xFFFFFFFC) + (int)anim_buffer;
         unsigned char prevPage = g_TextureCurrentPage;
@@ -927,6 +987,10 @@ void LoadEquippedWeaponAnimation(unsigned char weapon_id, unsigned char param_2,
         g_TextureCurrentPage = 7;
         g_TextureBankID = 0x16;
         ProcessTmdTextures(2, (unsigned int*)joint->anim_slot_ptr, 0x16, 7);
+        // Port: the gun's packets onto the weapon's own texture, when the
+        // migrator wrote one (WeaponTexture.h). Without it nothing changes.
+        WeaponTexture_Apply(weaponPath, g_playerEntity.id & 3,
+                            (unsigned int*)joint->anim_slot_ptr);
         g_TextureBankID = prevBank;
         g_TextureCurrentPage = prevPage;
         joint->anim_slot_ptr += 0xc;

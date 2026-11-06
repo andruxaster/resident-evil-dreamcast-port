@@ -69,8 +69,11 @@
 #include "core/TitleFont.h"
 #include "core/Tim.h"
 #include "core/Util.h"
+#include "core/WeaponTextures.h"
 
 #include <algorithm>
+#include <filesystem>
+#include <system_error>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -137,6 +140,62 @@ const RoomBg kRoomBgs[] = {
      "Laboratory B4, the Tyrant room - emptied vats, second capsule"},
 };
 
+// The camera pictures the game shows on the bordered screen (MSF2_SCREEN_BORDER,
+// set by the room's own script): the cave rooms, the two lab elevators and the
+// mansion elevator (stage 7 room 0x00, whose picture is stage 2's RC2000). For
+// these the game reads the background as a PACKED 316x236 bitmap - 316 pixels
+// per row, rows back to back - out of the 320x240 buffer (display_image(...,
+// 316, 236), src/game/Room.cpp), and the PC's paks are stored that way. The
+// Saturn's frame is a plain 320x240 picture whose top-left 316x236 is the PC's
+// picture (offset 0,0, checked on all five rooms below), so written as it is it
+// came out sheared four pixels a row: diagonal streaks.
+//
+// The list is every PC picture that is packed - all 29, found by row
+// continuity in the USA tree (a packed picture is smooth only at stride 316);
+// every other one of its 650 pictures is smooth only at stride 320. Packing is
+// per picture, not per room: RC2001..RC2004 are plain.
+struct BorderedBg {
+    char stageDigit;
+    int roomId;
+    unsigned cameraMask;   // bit n: camera n
+};
+
+const BorderedBg kBorderedBgs[] = {
+    {'2', 0x00, 0x01},   // mansion elevator (stage 7 room 0x00 reads RC2000)
+    {'3', 0x06, 0x0F},   // caves
+    {'3', 0x07, 0x7F},
+    {'3', 0x0B, 0xFF},
+    {'3', 0x0F, 0xFF},
+    {'5', 0x0D, 0x01},   // lab elevators
+    {'5', 0x15, 0x01},
+};
+
+constexpr int kBorderedW = 316;
+constexpr int kBorderedH = 236;
+
+bool isBorderedBg(char stageDigit, int roomId, int camera) {
+    for (const BorderedBg& b : kBorderedBgs)
+        if (b.stageDigit == stageDigit && b.roomId == roomId && camera >= 0 && camera < 32 &&
+            (b.cameraMask >> camera) & 1u)
+            return true;
+    return false;
+}
+
+// The frame's top-left 316x236 with its rows back to back, as the PC stores a
+// bordered picture; the 1,424 pixels left over at the end are black.
+std::vector<uint8_t> packBorderedFrame(const std::vector<uint8_t>& rgb) {
+    std::vector<uint8_t> out(rgb.size(), 0);
+    for (int y = 0; y < kBorderedH; ++y)
+        std::memcpy(&out[(size_t)y * kBorderedW * 3], &rgb[(size_t)y * kSaturnBgWidth * 3],
+                    (size_t)kBorderedW * 3);
+    return out;
+}
+
+// The pixels the PC background writer gets for camera `camera` of a room.
+std::vector<uint8_t> backgroundPixels(char stageDigit, int roomId, const SaturnBssFrame& f) {
+    return isBorderedBg(stageDigit, roomId, f.index) ? packBorderedFrame(f.rgb) : f.rgb;
+}
+
 // Campaign rooms whose *data* the Saturn also cut differently, and which are
 // therefore overlaid as a whole .RDT rather than patched in code. Both ship two
 // files per room (the two character variants, chosen by the last digit of
@@ -182,12 +241,14 @@ std::string findNoCase(const std::string& root, const std::string& folder,
     return std::string();
 }
 
+bool checkPcEmd(const std::vector<uint8_t>& d, std::string* why);
+
 // A weapon .EMW ends in two dwords, the second the offset of its TMD: one
 // object of 0x34000609 packets. Flags the texels the packets cover (128 x 256,
-// each packet's UV bounding box) and moves every packet 128 texels right, onto
-// the page half the donor texels are written to. False if it is not that shape.
-bool patchWeaponToRightHalf(std::vector<uint8_t>* emw, std::vector<uint8_t>* mask) {
-    std::vector<uint8_t>& d = *emw;
+// each packet's UV bounding box) and returns where the packets are and how many;
+// `row` is the CLUT row the first packet reads. False if it is not that shape.
+bool weaponFootprint(const std::vector<uint8_t>& d, std::vector<uint8_t>* mask,
+                     size_t* primsOut, size_t* countOut, int* row) {
     if (d.size() < 64) return false;
     const size_t tmd = readU32(d.data(), d.size(), d.size() - 4) & ~3u;
     if (tmd + 12 + 28 > d.size() || readU32(d.data(), d.size(), tmd + 8) != 1) return false;
@@ -209,9 +270,69 @@ bool patchWeaponToRightHalf(std::vector<uint8_t>* emw, std::vector<uint8_t>* mas
         for (int y = v0; y <= v1; ++y)
             for (int x = u0; x <= u1; ++x) (*mask)[(size_t)y * 128 + x] = 1;
     }
+    *primsOut = prims;
+    *countOut = count;
+    *row = ((readU16(d.data(), d.size(), prims + 6) >> 6) & 0x1FF) - 0x1E0;
+    return true;
+}
+
+// The footprint as above, then every packet moved 128 texels right, onto the
+// page half the donor texels are written to.
+bool patchWeaponToRightHalf(std::vector<uint8_t>* emw, std::vector<uint8_t>* mask) {
+    std::vector<uint8_t>& d = *emw;
+    size_t prims = 0, count = 0;
+    int row = 0;
+    if (!weaponFootprint(d, mask, &prims, &count, &row)) return false;
     for (size_t i = 0; i < count; ++i)
         for (int c = 0; c < 3; ++c) d[prims + 28 * i + 4 + 4 * c] += 128;
     return true;
+}
+
+// The DC's custom Beretta (Players/W0F.EMW Chris, W1F.EMW Jill, DC overlay
+// only). Like every weapon model it samples its holder's left page, but it
+// reaches texels the plain Beretta does not (Jill's: u 0..7, v 66..87), and
+// only the DC's own CHAR10/CHAR11 have the gun's art there. A Saturn outfit's
+// page is the PS1 original's (yellow filler there on Jill's), so worn in the
+// DC the gun came out yellow. Gives the colours the DC holder shows under the
+// gun's footprint (128 x 256 RGB555, 0 = hole) and the mask; false when the
+// DC overlay is not in the target folder.
+bool dcCustomBerettaTexels(const std::string& targetRoot, const char* emwName,
+                           const char* emdName, std::vector<uint8_t>* mask,
+                           std::vector<uint16_t>* colours) {
+    const std::string dc = joinPath(targetRoot, "DC");
+    const std::string emwPath = findNoCase(dc, "Players", emwName);
+    const std::string emdPath = findNoCase(dc, "Enemy", emdName);
+    std::vector<uint8_t> emw, emd;
+    std::string why;
+    if (emwPath.empty() || emdPath.empty() || !readFile(emwPath, &emw) ||
+        !readFile(emdPath, &emd) || !checkPcEmd(emd, &why))
+        return false;
+    size_t prims = 0, count = 0;
+    int row = 0;
+    if (!weaponFootprint(emw, mask, &prims, &count, &row)) return false;
+    const uint8_t* e = emd.data();
+    const size_t n = emd.size();
+    const size_t tim = readU32(e, n, n - 4);
+    const size_t clen = readU32(e, n, tim + 8);
+    const int cw = readU16(e, n, tim + 16), ch = readU16(e, n, tim + 18);
+    const size_t img = tim + 8 + clen;
+    if (cw != 256 || row < 0 || row >= ch || img + 12 > n) return false;
+    const int w = readU16(e, n, img + 8) * 2, h = readU16(e, n, img + 10);
+    if (w < 128 || h < 256 || img + 12 + (size_t)w * h > n) return false;
+    colours->assign((size_t)128 * 256, 0);
+    for (int y = 0; y < 256; ++y)
+        for (int x = 0; x < 128; ++x) {
+            const uint8_t i = e[img + 12 + (size_t)y * w + x];
+            if (i)
+                (*colours)[(size_t)y * 128 + x] =
+                    readU16(e, n, tim + 20 + 512 * (size_t)row + 2 * (size_t)i);
+        }
+    return true;
+}
+
+// The disc's names of the models Chris is loaded from (see isJillPlayerModel).
+bool isChrisPlayerModel(const std::string& discName) {
+    return discName == "CHAR10.EMD" || discName == "EM1030.EMD" || discName == "EM1032.EMD";
 }
 
 bool readDiscFile(const DiscImage& img, const std::string& folder,
@@ -416,6 +537,30 @@ bool migrateSaturnAssets(const SaturnMigrationOptions& opts,
                           ": Jill's flamethrower keeps the base tree's look");
         }
     }
+    // The DC's custom Beretta: its texels from the DC overlay's own player
+    // models, written into the Saturn players' left page (dcCustomBerettaTexels).
+    std::vector<uint8_t> berettaMask[2];
+    std::vector<uint16_t> berettaColours[2];
+    {
+        const char* const emw[2] = {"W0F.EMW", "W1F.EMW"};
+        const char* const emd[2] = {"CHAR10.EMD", "CHAR11.EMD"};
+        for (int c = 0; c < 2; ++c)
+            if (!dcCustomBerettaTexels(opts.targetRoot, emw[c], emd[c], &berettaMask[c],
+                                       &berettaColours[c])) {
+                berettaMask[c].clear();
+                berettaColours[c].clear();
+            }
+        if (berettaMask[0].empty() || berettaMask[1].empty())
+            progress.info("no Director's Cut overlay in " + joinPath(opts.targetRoot, "DC") +
+                          ": the DC's custom Beretta keeps the PS1 page's look on the "
+                          "Saturn outfits (migrate the Director's Cut first, then this disc)");
+    }
+    auto setBeretta = [&](const std::string& disc, SaturnEmdOptions* eo) {
+        const int c = isChrisPlayerModel(disc) ? 0 : isJillPlayerModel(disc) ? 1 : -1;
+        if (c < 0 || berettaMask[c].empty()) return;
+        eo->leftMask = &berettaMask[c];
+        eo->leftColours = &berettaColours[c];
+    };
     {
         progress.info("models: Saturn-only creatures and alternate outfits -> PC .EMD");
         for (const Model& m : kModels) {
@@ -433,6 +578,7 @@ bool migrateSaturnAssets(const SaturnMigrationOptions& opts,
                 eo.donorEmd = &chrisEmd;
                 eo.donorMask = &flameMask;
             }
+            if (m.weapon) setBeretta(m.disc, &eo);
             if (!convertSaturnEmd(src, &pc, &info, &err, eo)) {
                 if (error) *error = std::string(m.disc) + ": " + err;
                 return false;
@@ -479,6 +625,7 @@ bool migrateSaturnAssets(const SaturnMigrationOptions& opts,
                 eo.donorEmd = &chrisEmd;
                 eo.donorMask = &flameMask;
             }
+            if (eo.weaponPage) setBeretta(name, &eo);
             if (!convertSaturnEmd(src, &pc, &info, &err, eo)) {
                 if (error) *error = name + ": " + err;
                 return false;
@@ -498,6 +645,20 @@ bool migrateSaturnAssets(const SaturnMigrationOptions& opts,
                      name.c_str(), info.parts, info.palettes, info.textures, info.pages,
                      info.timHeight, pc.size());
             progress.info(line);
+        }
+        // With the base tree's gun texture (W15_1.TIM, core/WeaponTextures.h) the
+        // game draws the flamethrower from it on any model; an overlay W15.EMW
+        // would hide that file (the game only takes a texture from the weapon
+        // model's own tree), so the patched copy is only for older base trees.
+        const std::string baseTree =
+            joinPath(opts.targetRoot, region == SaturnRegion::Jpn ? "JPN" : "USA");
+        if (!flameEmw.empty() && !findNoCase(baseTree, "Players", "W15_1.TIM").empty()) {
+            flameEmw.clear();
+            const std::string stale = findNoCase(overlay, "Players", "W15.EMW");
+            std::error_code ec;
+            if (!stale.empty() && std::filesystem::remove(stale, ec))
+                progress.info("  removed " + stale + ": the base tree's W15_1.TIM draws Jill's "
+                              "flamethrower now");
         }
         if (!flameEmw.empty()) {
             const std::string rel = "Players/W15.EMW";
@@ -576,7 +737,8 @@ bool migrateSaturnAssets(const SaturnMigrationOptions& opts,
                 const std::string name = pakName(bg.stageDigit, bg.roomId, f.index);
                 // Same PC writer the DC's arrange backgrounds go through: a
                 // 320x240 16 bpp TIM (vram 0,240) inside the game's LZW.
-                const std::vector<uint8_t> tim = makeBackgroundTim(f.rgb);
+                const std::vector<uint8_t> tim =
+                    makeBackgroundTim(backgroundPixels(bg.stageDigit, bg.roomId, f));
                 const std::vector<uint8_t> pak = lzwPack(tim);
                 const std::string rel =
                     std::string("Stage") + bg.stageDigit + "/" + name;
@@ -774,7 +936,8 @@ bool migrateSaturnAssets(const SaturnMigrationOptions& opts,
             }
             for (const SaturnBssFrame& f : frames) {
                 const std::string name = pakName(r.stageDigit, r.roomId, f.index);
-                const std::vector<uint8_t> pak = lzwPack(makeBackgroundTim(f.rgb));
+                const std::vector<uint8_t> pak =
+                    lzwPack(makeBackgroundTim(backgroundPixels(r.stageDigit, r.roomId, f)));
                 const std::string prel = stageRel + "/" + name;
                 if (!writeFile(joinPath(overlay, prel), pak)) {
                     if (error) *error = "cannot write " + joinPath(overlay, prel);
@@ -798,6 +961,11 @@ bool migrateSaturnAssets(const SaturnMigrationOptions& opts,
                      {{"EM1061.EMD", "EM1061.EMD", "Chris, Saturn outfit"},
                       {"EM1161.EMD", "EM1161.EMD", "Jill, Saturn outfit"}},
                      progress);
+    // The base trees' gun textures again, now that they hold the Saturn outfits.
+    progress.info("weapon textures: the base trees' Players/W??_?.TIM");
+    for (const char* r : {"USA", "JPN"})
+        if (isDirectory(joinPath(opts.targetRoot, r)))
+            writeWeaponTextures(joinPath(opts.targetRoot, r), progress);
     {
         progress.info("music: the Battle Game's own tracks -> rendered from the sequences");
         // The Battle Game's results screens (RANKING.PRG 0x0602B1E4): their

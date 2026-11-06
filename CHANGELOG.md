@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.4.3](https://github.com/ecruells/resident-evil-pc-decomp/compare/residentevil-v1.4.2...residentevil-v1.4.3) (2026-11-04)
+
+
+### Bug Fixes
+
+* **saturn:** imported saturn outfit renders the custom beretta yellow in dc arrange mode ([9e2be4a](https://github.com/ecruells/resident-evil-pc-decomp/commit/9e2be4a65556133bc7638f6ac80686936d75d395))
+* **saturn:** imported saturn outfit renders the custom beretta yellow… ([076ab99](https://github.com/ecruells/resident-evil-pc-decomp/commit/076ab9911d767172d4676ddb5f8b6e409c2e9b86))
+* **texture:** non dc outfits render bad texture on custom beretta ([1fdf8b4](https://github.com/ecruells/resident-evil-pc-decomp/commit/1fdf8b4ccfeb139928421b3d1ffcd3de01a3cc77))
+
+## [1.4.2](https://github.com/ecruells/resident-evil-pc-decomp/compare/residentevil-v1.4.1...residentevil-v1.4.2) (2026-11-04)
+
+
+### Bug Fixes
+
+* crash when a death by a zombie ocurrs in a room with a mirror ([f8b97b9](https://github.com/ecruells/resident-evil-pc-decomp/commit/f8b97b98fdb70c7ca0314461a1fd0fbd5154626f))
+* game crash when head shooting many enemies in a row ([aaeb2a0](https://github.com/ecruells/resident-evil-pc-decomp/commit/aaeb2a0c63cb6d3b5af5c205e8c124cec63dcad4))
+* migrated ps1 and saturn bgms starts with the loops end ([5f28186](https://github.com/ecruells/resident-evil-pc-decomp/commit/5f28186bea5c2d3af4a9305f4fe8aba59a96c30e))
+* **saturn:** glitched rooms backgrounds in some rooms ([67e88e9](https://github.com/ecruells/resident-evil-pc-decomp/commit/67e88e9120d06f0784a8aff4fb82aaee60177204))
+* some custom emd models have transparent colors instead of solid ([fd8a2e0](https://github.com/ecruells/resident-evil-pc-decomp/commit/fd8a2e031a08ee435c545fa675caa951c22b9ae8))
+* **textures:** missing hd textures and hd tex load errors in dc and saturn modes ([dbb61d1](https://github.com/ecruells/resident-evil-pc-decomp/commit/dbb61d18fcbe63deee7b9326ae62fd8a424bed1b))
+* white dot appearing in dining room main door ([907c23c](https://github.com/ecruells/resident-evil-pc-decomp/commit/907c23c8b5ec243ab812e34ddf1363da9d709a27))
+* yawn2 floor smash effects looks like an explosion ([d430af9](https://github.com/ecruells/resident-evil-pc-decomp/commit/d430af9cf0e413474918753dbb3ceb863ca1ccbc))
+
 ## [1.4.1](https://github.com/ecruells/resident-evil-pc-decomp/compare/residentevil-v1.4.0...residentevil-v1.4.1) (2026-10-23)
 
 

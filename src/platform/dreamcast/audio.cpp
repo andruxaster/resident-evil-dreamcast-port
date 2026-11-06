@@ -84,6 +84,9 @@ struct Bank {
     uint32_t loopBegin, loopEnd;// frames; loopEnd 0 = whole buffer
     bool     ps1;               // linear interpolation (PS1 audio only)
     char     name[64];
+    // BGM_LOOP_HEAD: playing forward from below jumpFrom, continue at jumpTo
+    // (the cut first pass of a looping PS1 track). 0/0 = none.
+    uint32_t jumpFrom, jumpTo;
     // IMA ADPCM banks (IMA_ADPCM): `pcm` holds the compressed blocks; one block
     // at a time is decoded into `dec` when the mixer reaches it.
     bool     ima;
@@ -269,6 +272,7 @@ void MixBank(Bank& b, int32_t* acc, int frames)
         int32_t l, r;
         if (b.ps1) {
             uint32_t j = b.pos + 1;
+            if (j == b.jumpFrom && b.jumpFrom != 0) j = b.jumpTo;
             if (j >= end) j = b.loop ? begin : b.pos;
             const int32_t t = (int32_t)(b.frac >> 1);          // Q15
             // Both samples of frame pos first, then frame j: an IMA bank then
@@ -285,8 +289,14 @@ void MixBank(Bank& b, int32_t* acc, int frames)
         acc[f * 2 + 1] += (r * gr) >> 15;
 
         b.frac += b.step;
+        const uint32_t prev = b.pos;
         b.pos  += b.frac >> 16;
         b.frac &= 0xFFFF;
+        // BGM_LOOP_HEAD: the first pass's opening is over - go on in the
+        // second pass. Only when crossing it moving forward, so the loop's
+        // wrap back to jumpFrom (= the loop start) plays the second pass whole.
+        if (b.jumpFrom != 0 && prev < b.jumpFrom && b.pos >= b.jumpFrom)
+            b.pos = b.jumpTo + (b.pos - b.jumpFrom);
     }
 }
 
@@ -691,6 +701,8 @@ int DirectSound::CreateSound(const char* wavName)
     b.ps1        = af.ps1 != 0;
     b.loopBegin  = af.loopBegin;
     b.loopEnd    = af.loopEnd > af.loopBegin ? af.loopEnd : 0;
+    b.jumpFrom   = af.jumpFrom;
+    b.jumpTo     = af.jumpTo;
     b.active     = true;
     s_pcmBytes  += b.bytes;
 
