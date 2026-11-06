@@ -238,12 +238,14 @@ extern "C" void dc_save_commit(const char* path, const void* data, int len)
     char vpath[48];
     snprintf(vpath, sizeof(vpath), "%s/%s", s_vmuRoot, name);
     const uint64_t t0 = timer_ms_gettime64();
+    g_dcVmuBusy = 1;                      // vmu_lcd.cpp: leave the screen alone
     FILE* f = fopen(vpath, "wb");
     bool ok = false;
     if (f != nullptr) {
         ok = fwrite(buf, 1, (size_t)len + 8, f) == (size_t)len + 8;
         ok = (fclose(f) == 0) && ok;      // fs_vmu writes the blocks on close
     }
+    g_dcVmuBusy = 0;
     free(buf);
     if (ok) printf("[SAVE] %s written (%d bytes, %u ms)\n", vpath, len, (unsigned)(timer_ms_gettime64() - t0));
     else    printf("[SAVE] writing %s FAILED (VMU full or removed?)\n", vpath);

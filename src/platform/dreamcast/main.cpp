@@ -139,6 +139,7 @@ int main(int argc, char** argv)
     // the VMU (loaded here, written back after every save).
     SetSaveRoot(dc_save_root());
     dc_save_init();
+    dc_vmu_lcd_start();
 
     // 640x480 is the only mode the DC renderer will offer; the game's
     // logical 320x240 is scaled by the backend exactly as on PC.
