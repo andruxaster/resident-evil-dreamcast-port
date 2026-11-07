@@ -17,7 +17,7 @@ Toolchain: KallistiOS 2.3, GCC 15 (`kos-chain` stable).
 
 `DATA` is a folder holding `USA/` (and/or `JPN/`, `DC/`) and `config.ini`; its
 contents become the disc root, so the game finds `/cd/USA/...`. A sample
-`config.ini` is in `tools/dreamcast/`.
+`config.ini` is `config.ini.template` at the repository root.
 
 The shared translation units are read from the `RE1_SOURCES` block of
 `CMakeLists.txt`, so the Dreamcast and Linux source lists never drift apart.
@@ -153,7 +153,8 @@ indices 1..80, `PlaySound` slot ≠ 0 loops, volumes in millibels, pan
 −10000..10000, `GetStatus`).
 
 - **Mixer.** Banks stay in main RAM as decoded PCM and are mixed in software
-  into one stereo KOS stream at 22050 Hz (44100 Hz for the PS1 audio tree).
+  into one stereo KOS stream at 22050 Hz, whatever the banks' rate. IMA ADPCM
+  banks (`compress_audio.py`) stay compressed and are decoded block by block.
   Per-sample work is fixed point (16.16 position, Q15 gains); PS1 banks are
   linearly interpolated.
 - **Output.** The stream callback writes the mixed buffer into sound RAM
@@ -307,12 +308,11 @@ the game, so its "game speed" figure is not meaningful.
 | `make_cdi.sh` | CDI via `mkdcdisc` (CD-R, Flycast) |
 | `dc_movies_to_cinepak.sh` | Director's Cut `.mp4` movies → Cinepak AVI |
 | `dc_sound_to_22k.py` | resample sound banks to 22050 Hz (RAM and disc space) |
-| `config.ini` | default settings for a disc build |
+| `compress_audio.py` | sound banks → IMA ADPCM (4:1), PS1 music loops cut to size |
 
 ## Known limitations
 
-- Settings changed in the options menu are not kept across power-off on a
-  disc build.
+- There is no options menu; settings come from `config.ini` on the disc.
 - Movies are 320×240; higher-resolution Cinepak would not fit on the disc.
 - Camera cuts that load a new background and masks take one long tick
   (~200 ms).
