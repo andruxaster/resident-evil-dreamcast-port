@@ -1,4 +1,101 @@
-A native Sega Dreamcast port of Resident Evil (1997), based on the PC decompilation and built with KallistiOS. Features PowerVR2 rendering, AICA audio, Maple controller support, Cinepak video playback, and VMU saves. Currently in beta.
+# Resident Evil for Sega Dreamcast
+
+A native Sega Dreamcast port of Resident Evil (1997), built with KallistiOS on
+top of the [Resident Evil 1 PC decompilation](https://github.com/ecruells/resident-evil-pc-decomp).
+The game logic is the decomp's, unchanged. The Dreamcast side adds:
+
+- a platform layer (`src/platform/dreamcast/`);
+- a PowerVR2 renderer (`src/marni/MarniDX_PVR.cpp`).
+
+**Status: beta.** The whole game is playable on real hardware and in Flycast.
+No game data is included: the disc is built from your own copy of the game.
+
+## Features
+
+### Game
+- **Three releases in one engine**, chosen with `Mode=` in `config.ini`:
+  - **OG**: the PC release.
+  - **DC**: *Director's Cut*, with Arrange mode, the new outfits and the new item placements. It reads from a `DC/` overlay folder.
+  - **SATURN**: the Saturn release, with the Tick, Zombie Wesker and the Battle Game. It needs the separate Saturn build (see *Building*).
+- **Western difficulty rules**: no auto-aim, two ink ribbons per pick-up and second-playthrough enemies. Optional in OG, always on in DC and Saturn.
+- **PS1 extras**: the PS1 ending credits and the prologue subtitles of the Japanese release.
+
+### Graphics and video
+- **PowerVR2 renderer** at 640×480. Backgrounds, room masks and movies use bilinear filtering.
+- **FMV playback**: Cinepak AVI with PCM, IMA ADPCM or MS ADPCM sound. The picture follows the audio clock, so it never runs ahead of the sound. Every movie can be skipped (`SkipUnskippableFmv=1`).
+
+### Sound
+- **Software mixer** feeding the AICA, always at 22050 Hz.
+- **IMA ADPCM sound banks**: 4:1 for voices, about half the RAM and disc space for music. They stay compressed in RAM and are decoded block by block.
+- **PS1 music** from the asset migrator. The tracks have intros and seamless loops, and `compress_audio.py` cuts the migrator's doubled loops down to about half their size.
+- **File cache in sound RAM** (~1.7 MB). A revisited room or a repeated voice line is read without touching the disc.
+
+### VMU
+- **Saves on the VMU**, with a file name and icon. The BIOS memory manager lists them as *RESIDENT EVIL*.
+- **VMU screen**, in the style of the Dreamcast Resident Evil 2:
+  - during play: the condition (FINE / CAUTION / DANGER / POISON), an EKG drawn from the status screen's heartbeat shapes, and the equipped weapon with its ammo;
+  - outside a game: RESIDENT EVIL on black.
+
+### Disc
+- **GD-ROM image** (GDI) for GDEMU and Flycast, or **CDI** for CD-R.
+- **Direct ISO9660 reader**: each directory is indexed once and files are read by DMA in 64 KB chunks.
+
+### Controls
+
+| Dreamcast pad | Game |
+|---|---|
+| A | action / confirm |
+| B | cancel / run |
+| X / R trigger | aim |
+| Y | inventory |
+| L trigger | run |
+| Start | options screen |
+| D-pad / analog stick | move |
+
+## Differences from the PC build
+
+The Dreamcast has 16 MB of RAM, 8 MB of VRAM and a 640×480 output. Some of
+the PC build's additions are left out to fit:
+
+- **No HD textures, WebP backgrounds or HD fonts.** Keep the `.pak` room backgrounds in the data.
+- **No OPTIONS menu.** Its pages are about windows, resolutions and keyboards. Settings come from `config.ini` on the disc instead.
+- **The Saturn content is a separate build**, so the default build doesn't spend ~1.3 MB on it.
+- **Movies are 320×240 Cinepak.** The Director's Cut's H.264 `.mp4` movies have to be converted (see below).
+
+## Building
+
+Toolchain: KallistiOS 2.3, GCC 15.
+
+    source /opt/toolchains/dc/kos/environ.sh
+    make -f Makefile.dreamcast                      # build/dc/residentevil.elf
+    make -f Makefile.dreamcast RE1_DC_SATURN=1      # build/dc-saturn/, with the Saturn release
+    make -f Makefile.dreamcast gdi DATA=/srv/re1    # GD-ROM image in build/dc/gdi/
+    sh tools/dreamcast/make_cdi.sh build/dc/residentevil.elf /srv/re1 re1.cdi
+
+Build switches, the source layout and the internals are described in
+[docs/DREAMCAST_PORT.md](docs/DREAMCAST_PORT.md).
+
+## Preparing the data
+
+1. Set up the game data as described in [INSTALLATION.md](INSTALLATION.md). That means `USA/` from your PC copy, plus `DC/` / `SATURN/` and the PS1 music from the asset migrator if you want them. Use the `.pak` backgrounds, not WebP.
+2. Convert the Director's Cut movies to Cinepak: `tools/dreamcast/dc_movies_to_cinepak.sh`.
+3. Compress the sound banks:
+
+       python3 tools/dreamcast/compress_audio.py /srv/re1 --max-rate 22050 --bgm-gain -7
+
+   `--bgm-gain -7` brings the PS1 music down to the PC release's level. The original WAVs are moved to a backup folder, because the PC and Linux builds cannot read IMA banks.
+4. Copy `config.ini.template` into the data folder as `config.ini`, next to `USA/`, and set `Mode=` and the other keys there. The data folder's contents become the disc root.
+5. Build the GDI or CDI as shown above.
+
+## Known issues
+
+- An occasional click in the right audio channel on real hardware is still under investigation.
+- A camera cut that loads a new background takes one long tick (~200 ms).
+- Settings are not saved back on a disc build.
+
+---
+
+*The rest of this file is the README of the upstream PC decompilation.*
 
 # Resident Evil 1 for PC Decompilation
 
