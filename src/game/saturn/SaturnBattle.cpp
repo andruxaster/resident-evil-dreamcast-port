@@ -2398,6 +2398,10 @@ unsigned int saturn_title_build_text_page(const unsigned char* fontTim,
     unsigned char* pixels = p;
 
     for (int i = 0; text[i] != '\0'; i++) {
+        // fontus.tim's cell 0x20 is not blank (it holds a small glyph); the
+        // game's own text renderers skip spaces and only advance the pen
+        // (ending_draw_text), so the page keeps them transparent too.
+        if (text[i] == ' ') continue;
         const int cellCol = (int)((unsigned char)text[i]) % SATURN_FONT_COLS;
         const int cellRow = (int)((unsigned char)text[i]) / SATURN_FONT_COLS;
         for (int py = 0; py < SATURN_FONT_CELL_H; py++) {
