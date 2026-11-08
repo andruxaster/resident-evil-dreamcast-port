@@ -21,7 +21,15 @@
 #include "marni/MarniDX.h"
 #include "marni/MarniSystem.h"
 
+// Release build: INIT_QUIET turns KOS's debug output off before anything is
+// printed - no banner, no maple driver/device lists, no vid_set_mode line -
+// and with it the game's own printf and dbglog. Debug build (RE1_DC_VERBOSE=1):
+// everything goes to serial/dcload as before.
+#if RE1_DC_VERBOSE
 KOS_INIT_FLAGS(INIT_DEFAULT);
+#else
+KOS_INIT_FLAGS(INIT_DEFAULT | INIT_QUIET);
+#endif
 
 // Bumped once per main-loop pass; the audio thread's watchdog reads it.
 extern "C" { volatile uint32_t g_dcHeartbeat = 0; }
@@ -103,13 +111,14 @@ int main(int argc, char** argv)
     (void)argc; (void)argv;
     if (RE1_DC_POISON) PoisonFreeHeap();
 
+#if RE1_DC_VERBOSE
     printf("\n[RE1] Resident Evil PC decomp - Dreamcast build, data root %s\n",
            RE1_DC_ROOT);
-#if !RE1_DC_VERBOSE
-    // Release build: no serial/dcload log at all. The game's own trace
-    // (raw printf in shared code, dbg_printf, OutputDebugString) and the port's
-    // diagnostics all end here. Debug build: make ... RE1_DC_VERBOSE=1
-    printf("[RE1] release build - log disabled (rebuild with RE1_DC_VERBOSE=1)\n");
+#else
+    // Release build: no serial/dcload log at all (INIT_QUIET above already
+    // disabled dbgio; kept in case a KOS build ignores the flag). The game's
+    // own trace (raw printf in shared code, dbg_printf, OutputDebugString) and
+    // the port's diagnostics all end here. Debug build: make ... RE1_DC_VERBOSE=1
     dbgio_disable();
 #endif
     dc_report_memory("boot");
