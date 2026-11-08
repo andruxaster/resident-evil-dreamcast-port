@@ -836,7 +836,20 @@ void FlushTmdObjects(void)
 
         for (int k = 0; k < collected; k++) {
             const TmdTri* t3 = &g_tmdTris[g_tmdTriOrder[k]];
+#if defined(__DREAMCAST__)
+            // DOOR_NO_ZWRITE_FIX: the PVR backend draws everything in its
+            // translucent list, which has no alpha test, so a texel with alpha
+            // 0 still writes depth. A door made of cut-out panels (the lift's
+            // lattice gates: a wave-bar quad in front of the posts) then hides
+            // the far parts drawn after it. The door is the only thing on
+            // screen during the transition and these triangles are already
+            // sorted back to front - the PS1 drew doors that way, with no depth
+            // buffer at all - so leave depth unwritten while it runs.
+            const bool triWriteThis = t3->alpha >= 0.999f &&
+                                      (g_main_state_flags & MSF_ROOM_TRANSITION) == 0;
+#else
             const bool triWriteThis = t3->alpha >= 0.999f;
+#endif
 
             // Every scene sprite farther than this triangle has to be on
             // screen before it. The batch in flight is behind them too, so it
