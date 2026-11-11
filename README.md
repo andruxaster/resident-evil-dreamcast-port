@@ -46,10 +46,10 @@ No game data is included: the disc is built from your own copy of the game.
 |---|---|
 | A | action / confirm |
 | B | cancel / run |
-| X / R trigger | aim |
+| X / L trigger | run |
+| R trigger | aim |
 | Y | inventory |
-| L trigger | run |
-| Start | options screen |
+| Start | options screen (the original key and pad configuration) |
 | D-pad / analog stick | move |
 
 ## Differences from the PC build
@@ -58,7 +58,7 @@ The Dreamcast has 16 MB of RAM, 8 MB of VRAM and a 640×480 output. Some of
 the PC build's additions are left out to fit:
 
 - **No HD textures, WebP backgrounds or HD fonts.** Keep the `.pak` room backgrounds in the data.
-- **No OPTIONS menu.** Its pages are about windows, resolutions and keyboards. Settings come from `config.ini` on the disc instead.
+- **No OPTIONS menu from the PC build.** Its pages are about windows, resolutions and keyboards. Settings come from `config.ini` on the disc instead. The original 1997 options screen (pad button configuration) is still there, on Start.
 - **The Saturn content is a separate build**, so the default build doesn't spend ~1.3 MB on it.
 - **Movies are 320×240 Cinepak.** The Director's Cut's H.264 `.mp4` movies have to be converted (see below).
 

@@ -278,19 +278,16 @@ LAB_00480d7c:
                      ((g_message_flags & 0x40) != 0) &&
                      ((g_main_state_flags & MSF_MENU_ACTIVE) == 0)))
                 {
-                    // Check START+bit8 combo (Option Mode). Not on the Dreamcast,
-                    // which has no options menu (GameOptions.cpp is not built):
-                    // the combo is just START there, i.e. the inventory.
-#if !defined(__DREAMCAST__)
+                    // Check START+bit8 combo (Option Mode). On the Dreamcast the
+                    // pad's Start sends it (InputSystem.cpp) and it opens the
+                    // original options screen (check_menus_state).
                     if ((((g_button_pressed_id >> 8) & 0xFF) & 9) == 9 &&
                         ((g_main_state_flags & MSF_MENU_PENDING) == 0))
                     {
                         // Enable Option Mode menu
                         g_main_state_flags |= MSF_OPTIONS_REQUEST;
                     }
-                    else
-#endif
-                    if (((g_PlayerPadHeld >> 8) & 8) == 0 &&
+                    else if (((g_PlayerPadHeld >> 8) & 8) == 0 &&
                              ((g_main_state_flags & MSF_MENU_PENDING) == 0))
                     {
                         goto LAB_00480e89;
@@ -599,7 +596,9 @@ void check_menus_state(void)
         // screen is replaced by the in-game page of the title OPTIONS menu
         // (GameOptions.cpp: DISPLAY, INPUT, BACK TO TITLE).
 #if defined(__DREAMCAST__)
-        Task_execute(1, (void*)main_menu);   // never requested on the Dreamcast
+        // The Dreamcast has no GameOptions.cpp: the original screen it
+        // replaced (key / pad configuration) comes back instead.
+        Task_execute(1, (void*)options_menu);
 #else
         Task_execute(1, (void*)ingame_options_menu);
 #endif
