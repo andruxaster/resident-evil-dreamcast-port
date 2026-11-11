@@ -40,6 +40,30 @@ static const DWORD s_padDefaultXInput[32] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
 
+#if defined(__DREAMCAST__)
+// Dreamcast pad (src/platform/dreamcast/input.cpp publishes it in the XInput
+// slots; it has no LB/RB/LS/RS). X runs like B - the PS1 had run on its own
+// face button - and aiming is on the R trigger only. Start arrives as Back:
+// the options screen.
+static const DWORD s_padDefaultDreamcast[32] = {
+    0x1000, 0x4000, 0x8000, 0x2000,   // stick   up / down / left / right
+    0x1000, 0x4000, 0x8000, 0x2000,   // POV hat up / down / left / right
+    0x0080,   // 8   A          action / confirm
+    0x0040,   // 9   B          cancel / run
+    0x0040,   // 10  X          run
+    0x0800,   // 11  Y          inventory
+    0x0000,   // 12  (LB)
+    0x0000,   // 13  (RB)
+    0x0900,   // 14  Start      options
+    0x0000,   // 15  (Start slot - unused, the DC Start arrives as Back)
+    0x0000,   // 16  (LS click)
+    0x0000,   // 17  (RS click)
+    0x0040,   // 18  L trigger  run
+    0x0008,   // 19  R trigger  aim
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+};
+#endif
+
 // WinMM / HID pads (a DualShock 4 plugged straight in lands here, not on
 // XInput). Button numbering follows the DualShock HID order; on an XInput-era
 // pad seen through WinMM the same slots read A/B/X/Y/LB/RB/LT/RT instead, so
@@ -82,6 +106,17 @@ void InstallPadDefaultBindings(void)
 		}
 	}
 
+#if defined(__DREAMCAST__)
+	// Saves made before the Dreamcast layout existed carry the XInput default
+	// (X = aim); that is a default too, not a player's choice, so replace it.
+	if (!isEmpty &&
+	    memcmp(g_JoyRemapTbl[1], g_JoyRemapTblLegacyJoyDefault,
+	           sizeof(g_JoyRemapTblLegacyJoyDefault)) != 0 &&
+	    memcmp(g_JoyRemapTbl[1], s_padDefaultXInput, sizeof(s_padDefaultXInput)) != 0) {
+		return;  // player-configured layout - do not touch
+	}
+	memcpy(g_JoyRemapTbl[1], s_padDefaultDreamcast, sizeof(s_padDefaultDreamcast));
+#else
 	if (!isEmpty &&
 	    memcmp(g_JoyRemapTbl[1], g_JoyRemapTblLegacyJoyDefault,
 	           sizeof(g_JoyRemapTblLegacyJoyDefault)) != 0) {
@@ -92,6 +127,7 @@ void InstallPadDefaultBindings(void)
 	memcpy(g_JoyRemapTbl[1],
 	       MarniXInput::IsConnected() ? s_padDefaultXInput : s_padDefaultGeneric,
 	       sizeof(s_padDefaultXInput));
+#endif
 }
 
 // ============================================================================

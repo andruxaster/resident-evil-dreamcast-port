@@ -97,17 +97,18 @@ game with the slot number.
 
 `input.cpp` polls the first maple controller and publishes the same 32-bit
 mask as the Linux backend (d-pad/analog in bits 0–3, XInput button slots in
-bits 8–19), so the default pad bindings apply unchanged:
+bits 8–19). The Dreamcast has its own default bindings (`s_padDefaultDreamcast`,
+`src/game/InputSystem.cpp`); saves made with the older XInput default get them too:
 
 | DC pad | Slot | Game |
 |---|---|---|
 | A | A | action / confirm |
 | B | B | cancel / run |
-| X | X | aim |
+| X | X | run |
 | Y | Y | inventory |
 | L trigger | LT | run |
 | R trigger | RT | aim |
-| Start | Back | options screen |
+| Start | Back | options screen (original key / pad configuration) |
 
 ## Files and the disc
 

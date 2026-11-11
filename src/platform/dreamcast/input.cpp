@@ -6,15 +6,17 @@
 //   bits 8-19 = buttons, MARNI_XI_BTN_* - the XInput layout, so the port's
 //               InstallPadDefaultBindings applies unchanged
 //
-// DC pad -> XInput slot (and so -> game function with the default bindings):
+// DC pad -> XInput slot (and so -> game function with the Dreamcast default
+// bindings, s_padDefaultDreamcast in InputSystem.cpp):
 //   A      -> A        action / confirm
 //   B      -> B        cancel / run
-//   X      -> X        aim
+//   X      -> X        run
 //   Y      -> Y        inventory
 //   L trig -> LT       run
 //   R trig -> RT       aim
-//   Start  -> BACK     options screen  (the DC pad has no spare button; Y
-//                      already opens the inventory, so Start takes Back's job)
+//   Start  -> BACK     options screen - the original key / pad configuration
+//                      (the DC pad has no spare button; Y already opens the
+//                      inventory, so Start takes Back's job)
 #include "Globals.h"
 #include "platform/platform.h"
 #include "marni/MarniInput.h"
